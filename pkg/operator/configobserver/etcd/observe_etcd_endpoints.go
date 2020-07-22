@@ -33,7 +33,6 @@ func ObserveStorageURLsToArgumentsWithAlwaysLocal(genericListers configobserver.
 	return innerObserveStorageURLs(nil, true, genericListers, recorder, currentConfig, []string{"apiServerArguments", "etcd-servers"})
 }
 
-
 // ObserveStorageURLs observes the storage config URLs and sets storageConfig field in the observerConfig.
 //  If there is a problem observing the current storage config URLs, then the previously observed storage config URLs will be re-used.
 func ObserveStorageURLs(genericListers configobserver.Listers, recorder events.Recorder, currentConfig map[string]interface{}) (map[string]interface{}, []error) {
