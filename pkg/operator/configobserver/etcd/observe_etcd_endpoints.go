@@ -51,7 +51,7 @@ func innerObserveStorageURLs(fallbackObserver fallBackObserverFn, alwaysAppendLo
 		ret = configobserver.Pruned(ret, storageConfigURLsPath)
 	}()
 
-	lister := genericListers.(ConfigmapLister)
+	lister := genericListers.(ConfigMapLister)
 	var errs []error
 
 	previouslyObservedConfig := map[string]interface{}{}
@@ -66,7 +66,7 @@ func innerObserveStorageURLs(fallbackObserver fallBackObserverFn, alwaysAppendLo
 	}
 
 	var etcdURLs []string
-	etcdEndpoints, err := lister.ConfigmapLister().ConfigMaps(EtcdEndpointNamespace).Get(etcdEndpointName)
+	etcdEndpoints, err := lister.ConfigMapLister().ConfigMaps(EtcdEndpointNamespace).Get(etcdEndpointName)
 	if errors.IsNotFound(err) && fallbackObserver != nil {
 		// In clusters prior to 4.5, fall back to reading the old host-etcd-2 endpoint
 		// resource, if possible. In 4.6 we can assume consumers have been updated to
