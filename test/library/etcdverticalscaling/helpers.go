@@ -168,6 +168,7 @@ func EnsureMembersCount(t TestingT, etcdClientFactory EtcdClientCreator, expecte
 			return false, nil
 		}
 		defer closeFn()
+		defer etcdClient.Close() // ignore the errors
 
 		ctx, cancel := context.WithTimeout(context.TODO(), 15*time.Second)
 		defer cancel()
@@ -201,6 +202,7 @@ func EnsureMemberRemoved(etcdClientFactory EtcdClientCreator, memberName string)
 		return err
 	}
 	defer closeFn()
+	defer etcdClient.Close() // ignore the errors
 
 	ctx, cancel := context.WithTimeout(context.TODO(), 15*time.Second)
 	defer cancel()
@@ -223,6 +225,7 @@ func EnsureHealthyMember(t TestingT, etcdClientFactory EtcdClientCreator, member
 		return err
 	}
 	defer closeFn()
+	defer etcdClient.Close() // ignore the errors
 
 	// since we have a direct connection with the member
 	// getting any response is a good sign of healthiness
