@@ -49,10 +49,10 @@ func NewRoundTripper(mustGatherDir string) *readWriteRoundTripper {
 }
 
 func newReadWriteRoundTripper(sourceFS fs.FS) *readWriteRoundTripper {
-	return &readWriteRoundTripper{
-		readDelegate:  newReadRoundTripper(sourceFS),
-		writeDelegate: newWriteRoundTripper(),
-	}
+	rt := &readWriteRoundTripper{}
+	rt.readDelegate = newReadRoundTripper(sourceFS)
+	rt.writeDelegate = newWriteRoundTripper(rt.readDelegate.getKindForResource)
+	return rt
 }
 
 type readWriteRoundTripper struct {
