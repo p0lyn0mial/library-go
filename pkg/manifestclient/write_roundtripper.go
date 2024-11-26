@@ -28,21 +28,21 @@ type writeTrackingRoundTripper struct {
 	// requestInfoResolver is the same type constructed the same way as the kube-apiserver
 	requestInfoResolver *apirequest.RequestInfoFactory
 
-	getKindForResourceFunc func(gvr schema.GroupVersionResource) (kindData, error)
+	discoveryReader *discoveryReader
 
 	lock              sync.RWMutex
 	nextRequestNumber int
 	actionTracker     *AllActionsTracker[TrackedSerializedRequest]
 }
 
-func newWriteRoundTripper(getKindForResourceFunc func(gvr schema.GroupVersionResource) (kindData, error)) *writeTrackingRoundTripper {
+func newWriteRoundTripper(discoveryRoundTripper *discoveryReader) *writeTrackingRoundTripper {
 	return &writeTrackingRoundTripper{
 		nextRequestNumber: 1,
 		actionTracker:     &AllActionsTracker[TrackedSerializedRequest]{},
 		requestInfoResolver: server.NewRequestInfoResolver(&server.Config{
 			LegacyAPIGroupPrefixes: sets.NewString(server.DefaultLegacyAPIPrefix),
 		}),
-		getKindForResourceFunc: getKindForResourceFunc,
+		discoveryReader: discoveryRoundTripper,
 	}
 }
 
@@ -219,7 +219,7 @@ func (mrt *writeTrackingRoundTripper) roundTrip(req *http.Request) ([]byte, erro
 	if actionHasRuntimeObjectBody {
 		ret.SetGroupVersionKind(bodyObj.GetObjectKind().GroupVersionKind())
 	} else {
-		kindForResource, err := mrt.getKindForResourceFunc(gvr)
+		kindForResource, err := mrt.discoveryReader.getKindForResource(gvr)
 		if err != nil {
 			return nil, err
 		}

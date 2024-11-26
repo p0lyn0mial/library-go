@@ -14,18 +14,18 @@ import (
 	apirequest "k8s.io/apiserver/pkg/endpoints/request"
 )
 
-func (mrt *manifestRoundTripper) getGroupResourceDiscovery(requestInfo *apirequest.RequestInfo) ([]byte, error) {
+func (dr *discoveryReader) getGroupResourceDiscovery(requestInfo *apirequest.RequestInfo) ([]byte, error) {
 	switch {
 	case requestInfo.Path == "/api":
-		ret, err := mrt.getAggregatedDiscoveryForURL("aggregated-discovery-api.yaml", requestInfo.Path)
+		ret, err := dr.getAggregatedDiscoveryForURL("aggregated-discovery-api.yaml", requestInfo.Path)
 		if errors.Is(err, fs.ErrNotExist) {
-			return mrt.getLegacyGroupResourceDiscovery(requestInfo)
+			return dr.getLegacyGroupResourceDiscovery(requestInfo)
 		}
 		return ret, err
 	case requestInfo.Path == "/apis":
-		ret, err := mrt.getAggregatedDiscoveryForURL("aggregated-discovery-apis.yaml", requestInfo.Path)
+		ret, err := dr.getAggregatedDiscoveryForURL("aggregated-discovery-apis.yaml", requestInfo.Path)
 		if errors.Is(err, fs.ErrNotExist) {
-			return mrt.getLegacyGroupResourceDiscovery(requestInfo)
+			return dr.getLegacyGroupResourceDiscovery(requestInfo)
 		}
 		return ret, err
 	default:
@@ -34,8 +34,8 @@ func (mrt *manifestRoundTripper) getGroupResourceDiscovery(requestInfo *apireque
 	}
 }
 
-func (mrt *manifestRoundTripper) getAggregatedDiscoveryForURL(filename, url string) ([]byte, error) {
-	discoveryBytes, err := fs.ReadFile(mrt.sourceFS, filename)
+func (dr *discoveryReader) getAggregatedDiscoveryForURL(filename, url string) ([]byte, error) {
+	discoveryBytes, err := fs.ReadFile(dr.sourceFS, filename)
 	if errors.Is(err, fs.ErrNotExist) {
 		discoveryBytes, err = fs.ReadFile(defaultDiscovery, filepath.Join("default-discovery", filename))
 	}
@@ -55,7 +55,7 @@ func (mrt *manifestRoundTripper) getAggregatedDiscoveryForURL(filename, url stri
 	return apiJSON, err
 }
 
-func (mrt *manifestRoundTripper) getLegacyGroupResourceDiscovery(requestInfo *apirequest.RequestInfo) ([]byte, error) {
+func (dr *discoveryReader) getLegacyGroupResourceDiscovery(requestInfo *apirequest.RequestInfo) ([]byte, error) {
 	if len(requestInfo.Path) == 0 {
 		return nil, fmt.Errorf("path required for group resource discovery")
 	}
@@ -76,12 +76,12 @@ func (mrt *manifestRoundTripper) getLegacyGroupResourceDiscovery(requestInfo *ap
 	apiResources := map[string]metav1.APIResource{}
 
 	clusterGroupPath := filepath.Join("cluster-scoped-resources", group)
-	clusterGroupDirEntries, err := fs.ReadDir(mrt.sourceFS, clusterGroupPath)
+	clusterGroupDirEntries, err := fs.ReadDir(dr.sourceFS, clusterGroupPath)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return nil, fmt.Errorf("unable to read directory: %w", err)
 	}
 
-	apiResourcesForClusterScope, err := getAPIResourcesFromNamespaceDirEntries(clusterGroupDirEntries, mrt.sourceFS, group, version, clusterGroupPath, false /* cluster-scoped */)
+	apiResourcesForClusterScope, err := getAPIResourcesFromNamespaceDirEntries(clusterGroupDirEntries, dr.sourceFS, group, version, clusterGroupPath, false /* cluster-scoped */)
 	if err != nil {
 		return nil, fmt.Errorf("unable to get resources from cluster-scoped directory: %w", err)
 	}
@@ -89,7 +89,7 @@ func (mrt *manifestRoundTripper) getLegacyGroupResourceDiscovery(requestInfo *ap
 		apiResources[resourceName] = apiResource
 	}
 
-	namespaceDirEntries, err := fs.ReadDir(mrt.sourceFS, "namespaces")
+	namespaceDirEntries, err := fs.ReadDir(dr.sourceFS, "namespaces")
 	if err != nil {
 		return nil, fmt.Errorf("unable to read directory: %w", err)
 	}
@@ -99,7 +99,7 @@ func (mrt *manifestRoundTripper) getLegacyGroupResourceDiscovery(requestInfo *ap
 		}
 
 		namespaceGroupPath := filepath.Join("namespaces", namespaceDirEntry.Name(), group)
-		namespaceGroupDirEntries, err := fs.ReadDir(mrt.sourceFS, namespaceGroupPath)
+		namespaceGroupDirEntries, err := fs.ReadDir(dr.sourceFS, namespaceGroupPath)
 		if err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("unable to read directory: %w", err)
 		} else if errors.Is(err, fs.ErrNotExist) {
@@ -107,7 +107,7 @@ func (mrt *manifestRoundTripper) getLegacyGroupResourceDiscovery(requestInfo *ap
 			continue
 		}
 
-		apiResourcesForNamespace, err := getAPIResourcesFromNamespaceDirEntries(namespaceGroupDirEntries, mrt.sourceFS, group, version, namespaceGroupPath, true /* namespaced */)
+		apiResourcesForNamespace, err := getAPIResourcesFromNamespaceDirEntries(namespaceGroupDirEntries, dr.sourceFS, group, version, namespaceGroupPath, true /* namespaced */)
 		if err != nil {
 			return nil, fmt.Errorf("unable to get resources from namespace directory: %w", err)
 		}
@@ -118,7 +118,7 @@ func (mrt *manifestRoundTripper) getLegacyGroupResourceDiscovery(requestInfo *ap
 
 		// Namespaces are special: each namespace is stored in its own file within the namespace directory
 		namespacePath := filepath.Join("namespaces", namespaceDirEntry.Name(), namespaceDirEntry.Name()+".yaml")
-		if namespaceObj, err := readIndividualFile(mrt.sourceFS, namespacePath); err == nil {
+		if namespaceObj, err := readIndividualFile(dr.sourceFS, namespacePath); err == nil {
 			// It's currently not guaranteed that the file is always present
 			apiResources["namespaces"] = metav1.APIResource{
 				Name:       "namespaces",

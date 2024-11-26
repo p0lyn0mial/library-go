@@ -50,8 +50,9 @@ func NewRoundTripper(mustGatherDir string) *readWriteRoundTripper {
 
 func newReadWriteRoundTripper(sourceFS fs.FS) *readWriteRoundTripper {
 	rt := &readWriteRoundTripper{}
-	rt.readDelegate = newReadRoundTripper(sourceFS)
-	rt.writeDelegate = newWriteRoundTripper(rt.readDelegate.getKindForResource)
+	discoveryReader := newDiscoveryReader(sourceFS)
+	rt.readDelegate = newReadRoundTripper(sourceFS, discoveryReader)
+	rt.writeDelegate = newWriteRoundTripper(discoveryReader)
 	return rt
 }
 
