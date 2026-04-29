@@ -8,15 +8,14 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/openshift/library-go/pkg/operator/staticpod/internal/atomicdir/types"
+	"github.com/openshift/library-go/pkg/operator/staticpod/internal/fsutil"
 )
 
-// Sync can be used to atomically synchronize target directory with the given file content map.
-// This is done by populating a staging directory, then atomically swapping it with the target directory.
-// This effectively means that any extra files in the target directory are pruned.
-//
-// The staging directory needs to be explicitly specified. It is initially created using os.MkdirAll with targetDirPerm.
-// It is then populated using files with filePerm. Once the atomic swap is performed, the staging directory
-// (which is now the original target directory) is removed.
+// Sync atomically and durably replaces the contents of targetDir with the given files.
+// It writes files to a staging directory with fsync, then atomically swaps it with
+// the target directory via renameat2(RENAME_EXCHANGE), fsyncing parent directories
+// to ensure the swap is persisted. Extra files in targetDir are pruned.
+// The old target directory (now at stagingDir) is removed after the swap.
 func Sync(targetDir string, targetDirPerm os.FileMode, stagingDir string, files map[string]types.File) error {
 	return sync(&realFS, targetDir, targetDirPerm, stagingDir, files)
 }
@@ -31,20 +30,36 @@ type fileSystem struct {
 var realFS = fileSystem{
 	MkdirAll:        os.MkdirAll,
 	RemoveAll:       os.RemoveAll,
-	WriteFile:       os.WriteFile,
-	SwapDirectories: swap,
+	WriteFile:       fsutil.WriteFileFsync,
+	SwapDirectories: swapFsync,
 }
 
-// sync prepares a tmp directory and writes all files into that directory.
-// Then it atomically swap the tmp directory for the target one.
-// This is currently implemented as really atomically swapping directories.
+// swapFsync atomically exchanges two directories and fsyncs their parent
+// directories to ensure the exchange is durable on disk. If the swap succeeds
+// but a parent fsync fails, the directories have already been exchanged and
+// the returned error indicates the swap may not survive a crash.
+func swapFsync(firstDir, secondDir string) error {
+	if err := swap(firstDir, secondDir); err != nil {
+		return err
+	}
+	for _, dir := range []string{firstDir, secondDir} {
+		if err := fsutil.SyncPath(filepath.Dir(dir)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// sync writes files into the staging directory, then durably swaps it with the target.
+// Each file write is individually fsynced (including its parent directory entry) via
+// fs.WriteFile, and the swap fsyncs the parent directories of both paths.
 //
-// The same goal of atomic swap could be implemented using symlinks much like AtomicWriter does in
+// Note: the upstream Kubernetes AtomicWriter uses symlinks for atomic updates but does
+// not fsync, leaving file data in the page cache with no crash durability guarantee:
 // https://github.com/kubernetes/kubernetes/blob/v1.34.0/pkg/volume/util/atomic_writer.go#L58
-// The reason we don't do that is that we already have a directory populated and watched that needs to we swapped.
-// In other words, it's for compatibility reasons. And if we were to migrate to the symlink approach,
-// we would anyway need to atomically turn the current data directory into a symlink.
-// This would all just increase complexity and require atomic swap on the OS level anyway.
+// We use renameat2(RENAME_EXCHANGE) instead of symlinks because we need to swap an
+// existing directory that is already being watched. Migrating to symlinks would still
+// require an atomic swap at the OS level, adding complexity for no benefit.
 func sync(fs *fileSystem, targetDir string, targetDirPerm os.FileMode, stagingDir string, files map[string]types.File) (retErr error) {
 	klog.Infof("Ensuring target directory %q exists ...", targetDir)
 	if err := fs.MkdirAll(targetDir, targetDirPerm); err != nil {
@@ -84,5 +99,6 @@ func sync(fs *fileSystem, targetDir string, targetDirPerm os.FileMode, stagingDi
 	if err := fs.SwapDirectories(targetDir, stagingDir); err != nil {
 		return fmt.Errorf("failed swapping target directory %q with staging directory %q: %w", targetDir, stagingDir, err)
 	}
+
 	return
 }
