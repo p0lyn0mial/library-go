@@ -35,6 +35,7 @@ import (
 	"github.com/openshift/library-go/pkg/operator/staticpod/internal"
 	"github.com/openshift/library-go/pkg/operator/staticpod/internal/atomicdir"
 	"github.com/openshift/library-go/pkg/operator/staticpod/internal/flock"
+	"github.com/openshift/library-go/pkg/operator/staticpod/internal/fsutil"
 )
 
 const stagingDirUID = "installer"
@@ -622,14 +623,8 @@ func (o *InstallOptions) writePod(rawPodBytes []byte, manifestFileName, resource
 	// Write secrets, config maps and pod to disk
 	// This does not need timeout, instead we should fail hard when we are not able to write.
 	klog.Infof("Writing pod manifest %q ...", path.Join(resourceDir, manifestFileName))
-	if err := os.WriteFile(path.Join(resourceDir, manifestFileName), []byte(finalPodBytes), 0600); err != nil {
+	if err := fsutil.WriteFileFsync(path.Join(resourceDir, manifestFileName), []byte(finalPodBytes), 0600); err != nil {
 		return err
-	}
-	if err := syncPath(path.Join(resourceDir, manifestFileName)); err != nil {
-		return fmt.Errorf("failed syncing %q: %w", path.Join(resourceDir, manifestFileName), err)
-	}
-	if err := syncPath(resourceDir); err != nil {
-		return fmt.Errorf("failed syncing resource directory %q: %w", resourceDir, err)
 	}
 
 	// remove the existing file to ensure kubelet gets "create" event from inotify watchers
@@ -639,29 +634,10 @@ func (o *InstallOptions) writePod(rawPodBytes []byte, manifestFileName, resource
 		return err
 	}
 	klog.Infof("Writing static pod manifest %q ...\n%s", path.Join(o.PodManifestDir, manifestFileName), finalPodBytes)
-	if err := os.WriteFile(path.Join(o.PodManifestDir, manifestFileName), []byte(finalPodBytes), 0600); err != nil {
+	if err := fsutil.WriteFileFsync(path.Join(o.PodManifestDir, manifestFileName), []byte(finalPodBytes), 0600); err != nil {
 		return err
-	}
-	if err := syncPath(path.Join(o.PodManifestDir, manifestFileName)); err != nil {
-		return fmt.Errorf("failed syncing %q: %w", path.Join(o.PodManifestDir, manifestFileName), err)
-	}
-	if err := syncPath(o.PodManifestDir); err != nil {
-		return fmt.Errorf("failed syncing pod manifest directory %q: %w", o.PodManifestDir, err)
 	}
 	return nil
-}
-
-func syncPath(name string) error {
-	f, err := os.Open(name)
-	if err != nil {
-		return err
-	}
-	syncErr := f.Sync()
-	closeErr := f.Close()
-	if syncErr != nil {
-		return syncErr
-	}
-	return closeErr
 }
 
 func getStagingDir(targetDir string) string {
