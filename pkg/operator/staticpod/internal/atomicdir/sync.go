@@ -25,6 +25,7 @@ type fileSystem struct {
 	RemoveAll       func(path string) error
 	WriteFile       func(name string, data []byte, perm os.FileMode) error
 	SwapDirectories func(dirA, dirB string) error
+	Fsync           func(name string) error
 }
 
 var realFS = fileSystem{
@@ -32,6 +33,7 @@ var realFS = fileSystem{
 	RemoveAll:       os.RemoveAll,
 	WriteFile:       fsutil.WriteFileFsync,
 	SwapDirectories: swap,
+	Fsync:           fsutil.Fsync,
 }
 
 // sync writes files into the staging directory, then durably swaps it with the target.
@@ -84,10 +86,10 @@ func sync(fs *fileSystem, targetDir string, targetDirPerm os.FileMode, stagingDi
 		return fmt.Errorf("failed swapping target directory %q with staging directory %q: %w", targetDir, stagingDir, err)
 	}
 
-	if err := fsutil.Fsync(filepath.Dir(targetDir)); err != nil {
+	if err := fs.Fsync(filepath.Dir(targetDir)); err != nil {
 		return fmt.Errorf("failed syncing parent directory of %q: %w", targetDir, err)
 	}
-	if err := fsutil.Fsync(filepath.Dir(stagingDir)); err != nil {
+	if err := fs.Fsync(filepath.Dir(stagingDir)); err != nil {
 		return fmt.Errorf("failed syncing parent directory of %q: %w", stagingDir, err)
 	}
 

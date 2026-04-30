@@ -23,10 +23,6 @@ func Fsync(name string) error {
 	if err != nil {
 		return err
 	}
-	syncErr := f.Sync()
-	closeErr := f.Close()
-	if syncErr != nil {
-		return syncErr
-	}
-	return closeErr
+	defer f.Close()
+	return f.Sync()
 }
