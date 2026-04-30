@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	v1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 	"k8s.io/utils/diff"
@@ -129,6 +130,7 @@ func TestRoundtrip(t *testing.T) {
 						APIVersion: "v2",
 						Name:       "1",
 						Endpoint:   "unix:///var/run/kmsplugin/kms-1.sock",
+						Timeout:    &metav1.Duration{Duration: 10 * time.Second},
 					},
 					Provider: &configv1.KMSConfig{},
 				},
@@ -159,6 +161,7 @@ func TestRoundtrip(t *testing.T) {
 						APIVersion: "v2",
 						Name:       "2",
 						Endpoint:   "unix:///var/run/kmsplugin/kms-2.sock",
+						Timeout:    &metav1.Duration{Duration: 10 * time.Second},
 					},
 					Provider: &configv1.KMSConfig{},
 				},

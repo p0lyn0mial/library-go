@@ -13,7 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 	corev1 "k8s.io/api/core/v1"
 	apiextensionsv1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1"
-	"k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/typed/apiextensions/v1"
+	v1 "k8s.io/apiextensions-apiserver/pkg/client/clientset/clientset/typed/apiextensions/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
@@ -431,8 +431,8 @@ func TestEncryptionIntegration(tt *testing.T) {
 	require.NoError(t, err)
 	kmsProviderConfigData := kmsKeySecret.Data[secrets.EncryptionSecretKMSProviderConfig]
 	require.NotEmpty(t, kmsProviderConfigData, "expected kms-provider-config data to be present in key secret")
-	var providerConfig configv1.KMSConfig
-	require.NoError(t, json.Unmarshal(kmsProviderConfigData, &providerConfig))
+	providerConfig, err := secrets.DecodeKMSConfig(kmsProviderConfigData)
+	require.NoError(t, err)
 	require.Equal(t, configv1.VaultKMSProvider, providerConfig.Type)
 	require.Equal(t, "https://vault.example.com", providerConfig.Vault.VaultAddress)
 	require.Equal(t, "test-transit-key", providerConfig.Vault.TransitKey)

@@ -106,10 +106,16 @@ func CreateEncryptionKeySecretWithKMSConfig(targetNS string, grs []schema.GroupR
 		Endpoint:   fmt.Sprintf("unix:///var/run/kmsplugin/kms-%d.sock", keyID),
 		Timeout:    &metav1.Duration{Duration: 10 * time.Second},
 	}
-	kmsConfigJSON, _ := json.Marshal(kmsConfig)
-	secret.Data[encryptionSecretKMSEncryptionConfigForTest] = kmsConfigJSON
-	providerConfigJSON, _ := json.Marshal(&configv1.KMSConfig{})
-	secret.Data[encryptionSecretKMSProviderConfigForTest] = providerConfigJSON
+	encData, err := secrets.EncodeKMSConfiguration(kmsConfig)
+	if err != nil {
+		panic(fmt.Sprintf("failed to encode KMS encryption config: %v", err))
+	}
+	secret.Data[encryptionSecretKMSEncryptionConfigForTest] = encData
+	provData, err := secrets.EncodeKMSConfig(&configv1.KMSConfig{})
+	if err != nil {
+		panic(fmt.Sprintf("failed to encode KMS provider config: %v", err))
+	}
+	secret.Data[encryptionSecretKMSProviderConfigForTest] = provData
 	return secret
 }
 
