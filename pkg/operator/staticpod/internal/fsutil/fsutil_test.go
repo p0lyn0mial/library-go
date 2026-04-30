@@ -87,26 +87,26 @@ func TestWriteFileFsync(t *testing.T) {
 	}
 }
 
-func TestSyncPath(t *testing.T) {
+func TestFsync(t *testing.T) {
 	t.Run("syncs existing file", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "test.txt")
 		if err := os.WriteFile(path, []byte("data"), 0600); err != nil {
 			t.Fatal(err)
 		}
-		if err := SyncPath(path); err != nil {
+		if err := Fsync(path); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("syncs existing directory", func(t *testing.T) {
 		dir := t.TempDir()
-		if err := SyncPath(dir); err != nil {
+		if err := Fsync(dir); err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
 	})
 
 	t.Run("fails on nonexistent path", func(t *testing.T) {
-		if err := SyncPath(filepath.Join(t.TempDir(), "nonexistent")); err == nil {
+		if err := Fsync(filepath.Join(t.TempDir(), "nonexistent")); err == nil {
 			t.Fatal("expected error, got nil")
 		}
 	})

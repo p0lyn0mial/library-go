@@ -31,23 +31,7 @@ var realFS = fileSystem{
 	MkdirAll:        os.MkdirAll,
 	RemoveAll:       os.RemoveAll,
 	WriteFile:       fsutil.WriteFileFsync,
-	SwapDirectories: swapFsync,
-}
-
-// swapFsync atomically exchanges two directories and fsyncs their parent
-// directories to ensure the exchange is durable on disk. If the swap succeeds
-// but a parent fsync fails, the directories have already been exchanged and
-// the returned error indicates the swap may not survive a crash.
-func swapFsync(firstDir, secondDir string) error {
-	if err := swap(firstDir, secondDir); err != nil {
-		return err
-	}
-	for _, dir := range []string{firstDir, secondDir} {
-		if err := fsutil.SyncPath(filepath.Dir(dir)); err != nil {
-			return err
-		}
-	}
-	return nil
+	SwapDirectories: swap,
 }
 
 // sync writes files into the staging directory, then durably swaps it with the target.
@@ -98,6 +82,13 @@ func sync(fs *fileSystem, targetDir string, targetDirPerm os.FileMode, stagingDi
 	klog.Infof("Atomically swapping staging directory %q with target directory %q ...", stagingDir, targetDir)
 	if err := fs.SwapDirectories(targetDir, stagingDir); err != nil {
 		return fmt.Errorf("failed swapping target directory %q with staging directory %q: %w", targetDir, stagingDir, err)
+	}
+
+	if err := fsutil.Fsync(filepath.Dir(targetDir)); err != nil {
+		return fmt.Errorf("failed syncing parent directory of %q: %w", targetDir, err)
+	}
+	if err := fsutil.Fsync(filepath.Dir(stagingDir)); err != nil {
+		return fmt.Errorf("failed syncing parent directory of %q: %w", stagingDir, err)
 	}
 
 	return
