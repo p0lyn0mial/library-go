@@ -26,9 +26,9 @@ import (
 	configv1informers "github.com/openshift/client-go/config/informers/externalversions"
 
 	"github.com/openshift/library-go/pkg/controller/factory"
+	"github.com/openshift/library-go/pkg/operator/encryption/internal/codec"
 	encryptiondeployer "github.com/openshift/library-go/pkg/operator/encryption/deployer"
 	encryptiondatatesting "github.com/openshift/library-go/pkg/operator/encryption/encryptiondata/testing"
-	"github.com/openshift/library-go/pkg/operator/encryption/secrets"
 	encryptiontesting "github.com/openshift/library-go/pkg/operator/encryption/testing"
 	"github.com/openshift/library-go/pkg/operator/events"
 	"github.com/openshift/library-go/pkg/operator/v1helpers"
@@ -372,7 +372,7 @@ func TestKeyController(t *testing.T) {
 						if len(kmsConfigData) == 0 {
 							ts.Error("expected kms-encryption-config data to be present")
 						}
-						expectedEncCfg, err := secrets.EncodeKMSConfiguration(&apiserverconfigv1.KMSConfiguration{
+						expectedEncCfg, err := codec.EncodeKMSConfiguration(&apiserverconfigv1.KMSConfiguration{
 							APIVersion: "v2",
 							Name:       "1",
 							Endpoint:   "unix:///var/run/kmsplugin/kms-1.sock",
@@ -387,7 +387,7 @@ func TestKeyController(t *testing.T) {
 
 						// Verify KMS provider config content
 						kmsProviderConfigData := actualSecret.Data["encryption.apiserver.operator.openshift.io-kms-provider-config"]
-						expectedProviderConfig, err := secrets.EncodeKMSConfig(dummyKMSConfig)
+						expectedProviderConfig, err := codec.EncodeKMSConfig(dummyKMSConfig)
 						if err != nil {
 							ts.Fatalf("failed to encode KMS config: %v", err)
 						}
@@ -450,7 +450,7 @@ func TestKeyController(t *testing.T) {
 
 						// Verify KMS config is in data field
 						kmsConfigData := actualSecret.Data["encryption.apiserver.operator.openshift.io-kms-encryption-config"]
-						expectedEncCfg, err := secrets.EncodeKMSConfiguration(&apiserverconfigv1.KMSConfiguration{
+						expectedEncCfg, err := codec.EncodeKMSConfiguration(&apiserverconfigv1.KMSConfiguration{
 							APIVersion: "v2",
 							Name:       "6",
 							Endpoint:   "unix:///var/run/kmsplugin/kms-6.sock",
@@ -465,7 +465,7 @@ func TestKeyController(t *testing.T) {
 
 						// Verify KMS provider config content
 						kmsProviderConfigData := actualSecret.Data["encryption.apiserver.operator.openshift.io-kms-provider-config"]
-						expectedProviderConfig, err := secrets.EncodeKMSConfig(dummyKMSConfig)
+						expectedProviderConfig, err := codec.EncodeKMSConfig(dummyKMSConfig)
 						if err != nil {
 							ts.Fatalf("failed to encode KMS config: %v", err)
 						}
@@ -544,7 +544,7 @@ func TestKeyController(t *testing.T) {
 
 						// Verify KMS config is in data field
 						kmsConfigData := actualSecret.Data["encryption.apiserver.operator.openshift.io-kms-encryption-config"]
-						expectedEncCfg, err := secrets.EncodeKMSConfiguration(&apiserverconfigv1.KMSConfiguration{
+						expectedEncCfg, err := codec.EncodeKMSConfiguration(&apiserverconfigv1.KMSConfiguration{
 							APIVersion: "v2",
 							Name:       "6",
 							Endpoint:   "unix:///var/run/kmsplugin/kms-6.sock",
@@ -559,7 +559,7 @@ func TestKeyController(t *testing.T) {
 
 						// Verify KMS provider config content
 						kmsProviderConfigData := actualSecret.Data["encryption.apiserver.operator.openshift.io-kms-provider-config"]
-						expectedProviderConfig, err := secrets.EncodeKMSConfig(dummyKMSConfig)
+						expectedProviderConfig, err := codec.EncodeKMSConfig(dummyKMSConfig)
 						if err != nil {
 							ts.Fatalf("failed to encode KMS config: %v", err)
 						}
