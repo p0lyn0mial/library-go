@@ -1,14 +1,20 @@
 package kms
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 	"text/template"
 	"time"
+
+	vaultapi "github.com/hashicorp/vault/api"
 
 	corev1 "k8s.io/api/core/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
@@ -23,39 +29,31 @@ import (
 )
 
 const (
-	// WellKnownVaultNamespace is the default namespace where Vault runs.
-	WellKnownVaultNamespace = "vault-kms"
-
-	// WellKnownVaultImage is the default HashiCorp Vault Enterprise image.
-	WellKnownVaultImage = "docker.io/hashicorp/vault-enterprise:2.0.0-ent"
-
-	// WellKnownVaultServiceName is the name of the Vault service.
+	WellKnownVaultNamespace   = "vault-kms"
+	WellKnownVaultImage       = "docker.io/hashicorp/vault-enterprise:2.0.0-ent"
 	WellKnownVaultServiceName = "vault"
+	DefaultVaultReplicas      = 1
 
-	// DefaultVaultReplicas is the default number of Vault replicas to deploy.
-	DefaultVaultReplicas = 1
-
-	// VaultTransitMount is the default mount path for the transit secret engine.
-	VaultTransitMount = "transit"
-
-	// VaultTransitKeyName is the default key name in the transit engine.
+	VaultTransitMount   = "transit"
 	VaultTransitKeyName = "kubernetes-encryption-key"
 
-	// vaultCredentialsSecretName is the name of the Secret created by the
-	// init container with the AppRole credentials and root token.
 	vaultCredentialsSecretName = "vault-credentials"
+	vaultPollTimeout           = 5 * time.Minute
 
-	vaultPollTimeout = 5 * time.Minute
+	kmsPolicy = `
+path "transit/encrypt/kubernetes-encryption-key" {
+  capabilities = ["update"]
+}
+path "transit/decrypt/kubernetes-encryption-key" {
+  capabilities = ["update"]
+}
+`
 )
 
-// vaultSharedManifestFiles are applied via ApplyDirectly before the Deployment.
-// Order matters: namespace first, then RBAC, then configmap and service.
 var vaultSharedManifestFiles = []string{
 	"vault_namespace.yaml",
 	"vault_serviceaccount.yaml",
 	"vault_scc_rolebinding.yaml",
-	"vault_role.yaml",
-	"vault_role_binding.yaml",
 	"vault_configmap.yaml",
 	"vault_service.yaml",
 }
@@ -69,16 +67,16 @@ type VaultConfig struct {
 	Replicas  int
 }
 
-// vaultTemplateData holds the template variables for Vault YAML manifests.
-type vaultTemplateData struct {
-	Namespace string
-	Image     string
-	Replicas  int
+// VaultCredentials holds the AppRole credentials and root token returned after
+// Vault has been initialized and configured.
+type VaultCredentials struct {
+	RoleID   string
+	SecretID string
 }
 
 // VaultDeployer manages the deployment and lifecycle of HashiCorp Vault Enterprise
-// for KMS encryption testing. All init/unseal/configure logic runs inside the pod
-// as an init container; the Go deployer only applies manifests and reads results.
+// for KMS encryption testing. After applying manifests, it uses the Vault Go
+// client (via oc port-forward) to initialize, unseal, and configure Vault.
 type VaultDeployer struct {
 	config     *VaultConfig
 	kubeClient kubernetes.Interface
@@ -114,26 +112,30 @@ func NewVaultDeployer(t testing.TB, kubeClient kubernetes.Interface, config *Vau
 //
 // The VAULT_LICENSE environment variable must be set with the Vault Enterprise
 // license. The deployer creates a K8s Secret from it, which is mounted into
-// the Vault pod. An init container handles initialization, unsealing, transit
-// engine setup, and AppRole configuration. Credentials are written to the
-// "vault-credentials" Secret by the init container.
-func (d *VaultDeployer) Deploy(ctx context.Context) error {
+// the Vault pod.
+//
+// After the pod is ready, the deployer port-forwards to the Vault service and
+// uses the Vault Go client to initialize, unseal, enable the transit engine,
+// create the encryption key, set up AppRole auth, and store credentials in a
+// Kubernetes Secret.
+func (d *VaultDeployer) Deploy(ctx context.Context) (*VaultCredentials, error) {
 	d.t.Helper()
 	d.t.Logf("Deploying Vault Enterprise in namespace %q (replicas: %d)", d.config.Namespace, d.config.Replicas)
 
 	if err := d.applyManifests(ctx); err != nil {
-		return fmt.Errorf("failed to apply manifests: %w", err)
+		return nil, fmt.Errorf("failed to apply manifests: %w", err)
 	}
 
 	if err := d.waitForDeploymentReady(ctx); err != nil {
-		return fmt.Errorf("vault deployment not ready: %w", err)
+		return nil, fmt.Errorf("vault deployment not ready: %w", err)
 	}
 
-	if err := d.readCredentials(ctx); err != nil {
-		return fmt.Errorf("failed to read vault credentials: %w", err)
+	creds, err := d.configureVault(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("failed to configure vault: %w", err)
 	}
 
-	return nil
+	return creds, nil
 }
 
 // applyManifests creates the license secret from VAULT_LICENSE env var and
@@ -141,14 +143,8 @@ func (d *VaultDeployer) Deploy(ctx context.Context) error {
 func (d *VaultDeployer) applyManifests(ctx context.Context) error {
 	d.t.Helper()
 
-	templateData := vaultTemplateData{
-		Namespace: d.config.Namespace,
-		Image:     d.config.Image,
-		Replicas:  d.config.Replicas,
-	}
-
 	recorder := events.NewInMemoryRecorder("vault-deployer", clock.RealClock{})
-	assetFunc := wrapVaultAssetWithTemplateData(templateData)
+	assetFunc := d.assetFunc()
 
 	clientHolder := resourceapply.NewKubeClientHolder(d.kubeClient)
 	results := resourceapply.ApplyDirectly(ctx, clientHolder, recorder, resourceapply.NewResourceCache(), assetFunc, vaultSharedManifestFiles...)
@@ -211,8 +207,7 @@ func (d *VaultDeployer) createLicenseSecret(ctx context.Context) error {
 	return nil
 }
 
-// waitForDeploymentReady waits for the Vault Deployment to have all replicas
-// ready, which implies the init container (vault-setup) has completed.
+// waitForDeploymentReady waits for the Vault Deployment to have all replicas ready.
 func (d *VaultDeployer) waitForDeploymentReady(ctx context.Context) error {
 	d.t.Helper()
 	d.t.Logf("Waiting for Vault deployment to be ready...")
@@ -232,41 +227,194 @@ func (d *VaultDeployer) waitForDeploymentReady(ctx context.Context) error {
 	})
 }
 
-// readCredentials reads the vault-credentials Secret created by the init
-// container and populates the VaultConfig with AppRole credentials.
-func (d *VaultDeployer) readCredentials(ctx context.Context) error {
+// configureVault port-forwards to the Vault service, initializes, unseals,
+// and configures Vault for KMS testing using the Vault Go client.
+func (d *VaultDeployer) configureVault(ctx context.Context) (*VaultCredentials, error) {
 	d.t.Helper()
-	d.t.Logf("Reading vault credentials from secret %s/%s", d.config.Namespace, vaultCredentialsSecretName)
 
-	var secret *corev1.Secret
-	err := wait.PollUntilContextTimeout(ctx, 2*time.Second, 2*time.Minute, true, func(ctx context.Context) (bool, error) {
-		var getErr error
-		secret, getErr = d.kubeClient.CoreV1().Secrets(d.config.Namespace).Get(ctx, vaultCredentialsSecretName, metav1.GetOptions{})
-		if getErr != nil {
-			if apierrors.IsNotFound(getErr) {
-				return false, nil
-			}
-			return false, getErr
-		}
-		return true, nil
+	client, done, err := d.newVaultClient()
+	if err != nil {
+		return nil, fmt.Errorf("failed to create vault client: %w", err)
+	}
+	defer done()
+
+	d.t.Logf("Initializing Vault...")
+	initResp, err := client.Sys().InitWithContext(ctx, &vaultapi.InitRequest{
+		SecretShares:    1,
+		SecretThreshold: 1,
 	})
 	if err != nil {
-		return fmt.Errorf("timed out waiting for %s secret: %w", vaultCredentialsSecretName, err)
+		return nil, fmt.Errorf("failed to init vault: %w", err)
 	}
 
-	if _, ok := secret.Data["role-id"]; !ok {
-		return fmt.Errorf("vault-credentials secret missing role-id")
-	}
-	if _, ok := secret.Data["secret-id"]; !ok {
-		return fmt.Errorf("vault-credentials secret missing secret-id")
+	d.t.Logf("Unsealing Vault...")
+	_, err = client.Sys().UnsealWithContext(ctx, initResp.KeysB64[0])
+	if err != nil {
+		return nil, fmt.Errorf("failed to unseal vault: %w", err)
 	}
 
-	d.t.Logf("Vault AppRole credentials loaded from secret")
+	client.SetToken(initResp.RootToken)
+
+	d.t.Logf("Enabling transit secret engine...")
+	err = client.Sys().MountWithContext(ctx, VaultTransitMount, &vaultapi.MountInput{
+		Type: "transit",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to enable transit engine: %w", err)
+	}
+
+	d.t.Logf("Creating transit encryption key %q...", VaultTransitKeyName)
+	_, err = client.Logical().WriteWithContext(ctx, fmt.Sprintf("%s/keys/%s", VaultTransitMount, VaultTransitKeyName), nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create transit key: %w", err)
+	}
+
+	d.t.Logf("Enabling AppRole auth...")
+	err = client.Sys().EnableAuthWithOptionsWithContext(ctx, "approle", &vaultapi.EnableAuthOptions{
+		Type: "approle",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to enable approle auth: %w", err)
+	}
+
+	d.t.Logf("Creating KMS policy...")
+	err = client.Sys().PutPolicyWithContext(ctx, "kms-policy", kmsPolicy)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create kms policy: %w", err)
+	}
+
+	d.t.Logf("Creating AppRole role...")
+	_, err = client.Logical().WriteWithContext(ctx, "auth/approle/role/kms-plugin", map[string]interface{}{
+		"token_policies": "kms-policy",
+		"token_ttl":      "1h",
+		"token_max_ttl":  "4h",
+	})
+	if err != nil {
+		return nil, fmt.Errorf("failed to create approle role: %w", err)
+	}
+
+	roleIDSecret, err := client.Logical().ReadWithContext(ctx, "auth/approle/role/kms-plugin/role-id")
+	if err != nil {
+		return nil, fmt.Errorf("failed to read role-id: %w", err)
+	}
+	roleID, ok := roleIDSecret.Data["role_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("role_id not found or not a string")
+	}
+
+	secretIDSecret, err := client.Logical().WriteWithContext(ctx, "auth/approle/role/kms-plugin/secret-id", nil)
+	if err != nil {
+		return nil, fmt.Errorf("failed to generate secret-id: %w", err)
+	}
+	secretID, ok := secretIDSecret.Data["secret_id"].(string)
+	if !ok {
+		return nil, fmt.Errorf("secret_id not found or not a string")
+	}
+
+	creds := &VaultCredentials{
+		RoleID:   roleID,
+		SecretID: secretID,
+	}
+
+	if err := d.storeCredentials(ctx, creds); err != nil {
+		return nil, fmt.Errorf("failed to store vault credentials: %w", err)
+	}
+
+	d.t.Logf("Vault configured successfully")
+	return creds, nil
+}
+
+// storeCredentials creates a Kubernetes Secret with the Vault AppRole credentials.
+func (d *VaultDeployer) storeCredentials(ctx context.Context, creds *VaultCredentials) error {
+	d.t.Helper()
+
+	secret := &corev1.Secret{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      vaultCredentialsSecretName,
+			Namespace: d.config.Namespace,
+		},
+		Type: corev1.SecretTypeOpaque,
+		Data: map[string][]byte{
+			"role-id":   []byte(creds.RoleID),
+			"secret-id": []byte(creds.SecretID),
+		},
+	}
+
+	_, err := d.kubeClient.CoreV1().Secrets(d.config.Namespace).Create(ctx, secret, metav1.CreateOptions{})
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			_, err = d.kubeClient.CoreV1().Secrets(d.config.Namespace).Update(ctx, secret, metav1.UpdateOptions{})
+			return err
+		}
+		return err
+	}
+
+	d.t.Logf("Created %s secret with AppRole credentials", vaultCredentialsSecretName)
 	return nil
 }
 
-// wrapVaultAssetWithTemplateData returns an AssetFunc that templates Vault YAML with the given data.
-func wrapVaultAssetWithTemplateData(data vaultTemplateData) resourceapply.AssetFunc {
+// newVaultClient establishes a port-forward to the Vault service and returns
+// a configured Vault API client. The caller must call the returned cleanup
+// function to terminate the port-forward.
+func (d *VaultDeployer) newVaultClient() (*vaultapi.Client, func(), error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cmd := exec.CommandContext(ctx, "oc", "port-forward",
+		fmt.Sprintf("service/%s", WellKnownVaultServiceName), ":8200",
+		"-n", d.config.Namespace,
+	)
+
+	done := func() {
+		cancel()
+		_ = cmd.Wait()
+	}
+
+	var err error
+	defer func() {
+		if err != nil {
+			done()
+		}
+	}()
+
+	stdOut, err := cmd.StdoutPipe()
+	if err != nil {
+		return nil, nil, err
+	}
+
+	if err = cmd.Start(); err != nil {
+		return nil, nil, err
+	}
+
+	scanner := bufio.NewScanner(stdOut)
+	if !scanner.Scan() {
+		err = fmt.Errorf("failed to scan port-forward stdout")
+		return nil, nil, err
+	}
+	if err = scanner.Err(); err != nil {
+		return nil, nil, err
+	}
+	output := scanner.Text()
+
+	port := strings.TrimSuffix(strings.TrimPrefix(output, "Forwarding from 127.0.0.1:"), " -> 8200")
+	if _, err = strconv.Atoi(port); err != nil {
+		err = fmt.Errorf("port-forward output not in expected format: %s", output)
+		return nil, nil, err
+	}
+
+	d.t.Logf("Port-forwarding to Vault at 127.0.0.1:%s", port)
+
+	vaultConfig := vaultapi.DefaultConfig()
+	vaultConfig.Address = fmt.Sprintf("http://127.0.0.1:%s", port)
+
+	client, err := vaultapi.NewClient(vaultConfig)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to create vault api client: %w", err)
+	}
+
+	return client, done, nil
+}
+
+// assetFunc returns an AssetFunc that templates Vault YAML manifests.
+func (d *VaultDeployer) assetFunc() resourceapply.AssetFunc {
 	return func(name string) ([]byte, error) {
 		content, err := assetsFS.ReadFile(filepath.Join("assets", name))
 		if err != nil {
@@ -279,7 +427,7 @@ func wrapVaultAssetWithTemplateData(data vaultTemplateData) resourceapply.AssetF
 		}
 
 		var buf bytes.Buffer
-		if err := tmpl.Execute(&buf, data); err != nil {
+		if err := tmpl.Execute(&buf, d.config); err != nil {
 			return nil, err
 		}
 

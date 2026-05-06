@@ -18,19 +18,10 @@ spec:
         - name: vault
           image: {{ .Image }}
           imagePullPolicy: IfNotPresent
-          command:
-            - /bin/sh
-            - -c
-          args:
-            - |
-              export POD_IP=$(hostname -i)
-              sed "s/POD_IP/${POD_IP}/g" /vault/config/vault.hcl > /tmp/vault.hcl
-              exec vault server -config=/tmp/vault.hcl
+          command: ["vault", "server", "-config=/vault/config/vault.hcl"]
           env:
             - name: VAULT_ADDR
               value: "http://127.0.0.1:8200"
-            - name: VAULT_API_ADDR
-              value: "http://$(POD_IP):8200"
             - name: VAULT_LICENSE_PATH
               value: "/vault/license/license"
           ports:
@@ -55,16 +46,6 @@ spec:
               mountPath: /vault/config
             - name: license
               mountPath: /vault/license
-        - name: vault-setup
-          image: {{ .Image }}
-          imagePullPolicy: IfNotPresent
-          command: ["/bin/sh", "/vault/config/setup.sh"]
-          env:
-            - name: VAULT_ADDR
-              value: "http://127.0.0.1:8200"
-          volumeMounts:
-            - name: config
-              mountPath: /vault/config
       volumes:
         - name: config
           configMap:
