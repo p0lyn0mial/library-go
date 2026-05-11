@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
 
 	corev1 "k8s.io/api/core/v1"
@@ -76,16 +77,27 @@ func ToKeyState(s *corev1.Secret) (state.KeyState, error) {
 			// encryption mode.
 			return state.KeyState{}, fmt.Errorf("%s can not be empty, when mode is KMS", EncryptionSecretKMSEncryptionConfig)
 		}
-		if v, ok := s.Data[EncryptionSecretKMSPluginConfig]; ok && len(v) > 0 {
+		if v, ok := s.Data[encryptionSecretKMSPluginConfig]; ok && len(v) > 0 {
 			kmsConfig, err := encoding.DecodeKMSPluginConfig(v)
 			if err != nil {
-				return state.KeyState{}, fmt.Errorf("secret %s/%s has invalid %s data: %w", s.Namespace, s.Name, EncryptionSecretKMSPluginConfig, err)
+				return state.KeyState{}, fmt.Errorf("secret %s/%s has invalid %s data: %w", s.Namespace, s.Name, encryptionSecretKMSPluginConfig, err)
 			}
 			key.KMS.Plugin = kmsConfig
 		} else {
 			// encryption.apiserver.operator.openshift.io-kms-plugin-config data field is required for KMS
 			// encryption mode.
-			return state.KeyState{}, fmt.Errorf("%s can not be empty, when mode is KMS", EncryptionSecretKMSPluginConfig)
+			return state.KeyState{}, fmt.Errorf("%s can not be empty, when mode is KMS", encryptionSecretKMSPluginConfig)
+		}
+		for dataKey, value := range s.Data {
+			rawKey, found := strings.CutPrefix(dataKey, encryptionSecretKMSSecretDataPrefix)
+			if !found || len(rawKey) == 0 {
+				continue
+			}
+			secretName, secretKey, err := SplitSecretDataKey(rawKey)
+			if err != nil {
+				return state.KeyState{}, fmt.Errorf("secret %s/%s has malformed secret data key %q: %w", s.Namespace, s.Name, dataKey, err)
+			}
+			key.KMS.PluginSecretData.Set(secretName, secretKey, value)
 		}
 		key.Mode = keyMode
 	default:
@@ -106,7 +118,7 @@ func FromKeyState(component string, ks state.KeyState) (*corev1.Secret, error) {
 	}
 
 	if ks.Mode == state.KMS && (!ks.HasKMSEncryption() || !ks.HasKMSPlugin()) {
-		return nil, fmt.Errorf("%s or %s can not be empty, when mode is KMS", EncryptionSecretKMSEncryptionConfig, EncryptionSecretKMSPluginConfig)
+		return nil, fmt.Errorf("%s or %s can not be empty, when mode is KMS", EncryptionSecretKMSEncryptionConfig, encryptionSecretKMSPluginConfig)
 	}
 
 	s := &corev1.Secret{
@@ -156,7 +168,19 @@ func FromKeyState(component string, ks state.KeyState) (*corev1.Secret, error) {
 		if err != nil {
 			return nil, err
 		}
-		s.Data[EncryptionSecretKMSPluginConfig] = pluginData
+		s.Data[encryptionSecretKMSPluginConfig] = pluginData
+	}
+
+	if ks.HasKMSSecretData() {
+		for secretName, secretData := range ks.KMS.PluginSecretData.Get() {
+			for dataKey, value := range secretData {
+				// Write referenced secret data to the Key Secret using the format:
+				// "encryption.apiserver.operator.openshift.io-kms-plugin-secret-{secretName}_{dataKey}"
+				// "_" separates secretName from dataKey because "_" is forbidden in
+				// Kubernetes secret names, making the split unambiguous.
+				s.Data[encryptionSecretKMSSecretDataPrefix+JoinSecretDataKey(secretName, dataKey)] = value
+			}
+		}
 	}
 
 	return s, nil
@@ -183,4 +207,28 @@ func ListKeySecrets(ctx context.Context, secretClient corev1client.SecretsGetter
 		encryptionSecrets = append(encryptionSecrets, &encryptionSecretList.Items[i])
 	}
 	return encryptionSecrets, nil
+}
+
+// JoinSecretDataKey combines a secret name and data key using the
+// separator. The result is used as a key in KMSSecretData and in Secret data keys.
+func JoinSecretDataKey(secretName, dataKey string) string {
+	return secretName + secretDataKeySeparator + dataKey
+}
+
+// SplitSecretDataKey splits a combined key into secret name and data key.
+func SplitSecretDataKey(combined string) (string, string, error) {
+	parts := strings.SplitN(combined, secretDataKeySeparator, 2)
+	if len(parts) != 2 {
+		return "", "", fmt.Errorf("invalid secret data key %q: expected format {secretName}%s{dataKey}", combined, secretDataKeySeparator)
+	}
+	return parts[0], parts[1], nil
+}
+
+// ValidateSecretDataKey returns an error if the given string contains the
+// separator used between secret name and data key.
+func ValidateSecretDataKey(s string) error {
+	if strings.Contains(s, secretDataKeySeparator) {
+		return fmt.Errorf("%q must not contain %q", s, secretDataKeySeparator)
+	}
+	return nil
 }

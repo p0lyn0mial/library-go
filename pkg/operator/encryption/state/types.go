@@ -53,6 +53,10 @@ func (k *KeyState) HasKMSPlugin() bool {
 	return k != nil && k.KMS != nil && k.KMS.Plugin != (configv1.KMSPluginConfig{})
 }
 
+func (k *KeyState) HasKMSSecretData() bool {
+	return k != nil && k.KMS != nil && len(k.KMS.PluginSecretData.Get()) > 0
+}
+
 // KMSState stores all KMS encryption mode related configurations
 type KMSState struct {
 	// Encoded EncryptionConfig that stores the KMS related fields
@@ -60,6 +64,32 @@ type KMSState struct {
 
 	// Plugin stores KMS plugin specific configurations
 	Plugin configv1.KMSPluginConfig
+
+	// PluginSecretData stores data key-value pairs fetched from referenced secrets.
+	PluginSecretData KMSSecretData
+}
+
+// KMSSecretData stores data key-value pairs fetched from referenced secrets.
+// Entries maps secret names to their data key-value pairs.
+type KMSSecretData struct {
+	Entries map[string]map[string][]byte
+}
+
+func (d *KMSSecretData) Get() map[string]map[string][]byte {
+	if d.Entries == nil {
+		return map[string]map[string][]byte{}
+	}
+	return d.Entries
+}
+
+func (d *KMSSecretData) Set(secretName, dataKey string, value []byte) {
+	if d.Entries == nil {
+		d.Entries = map[string]map[string][]byte{}
+	}
+	if d.Entries[secretName] == nil {
+		d.Entries[secretName] = map[string][]byte{}
+	}
+	d.Entries[secretName][dataKey] = value
 }
 
 type MigrationState struct {
