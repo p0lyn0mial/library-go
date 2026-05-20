@@ -326,10 +326,10 @@ func TestEncryptionIntegration(tt *testing.T) {
 		for keyID := range expectedKeyIDs {
 			perKeyData, ok := cfg.KMSPluginsSecretData[keyID]
 			require.True(t, ok, "expected secret data for keyID %s in encryption-config secret", keyID)
-			require.NotEmpty(t, perKeyData.Get(), "expected non-empty secret data for keyID %s", keyID)
+			require.NotEmpty(t, perKeyData.Entries, "expected non-empty secret data for keyID %s", keyID)
 
 			// Verify actual values match the source secret
-			vaultData, ok := perKeyData.Get()["vault-approle-secret"]
+			vaultData, ok := perKeyData.Entries["vault-approle-secret"]
 			require.True(t, ok, "expected vault-approle-secret data for keyID %s", keyID)
 			require.Equal(t, "test-role-id", string(vaultData["role-id"]), "role-id secret data mismatch for keyID %s", keyID)
 			require.Equal(t, "test-secret-id", string(vaultData["secret-id"]), "secret-id secret data mismatch for keyID %s", keyID)
@@ -337,8 +337,8 @@ func TestEncryptionIntegration(tt *testing.T) {
 			// Verify Key Secret also carries the secret data
 			keySecret, err := kubeClient.CoreV1().Secrets("openshift-config-managed").Get(ctx, fmt.Sprintf("encryption-key-%s-%s", component, keyID), metav1.GetOptions{})
 			require.NoError(t, err)
-			require.Equal(t, "test-role-id", string(keySecret.Data["encryption.apiserver.operator.openshift.io-kms-plugin-secret-"+secrets.JoinSecretDataKey("vault-approle-secret", "role-id")]), "key secret %s role-id secret data mismatch", keyID)
-			require.Equal(t, "test-secret-id", string(keySecret.Data["encryption.apiserver.operator.openshift.io-kms-plugin-secret-"+secrets.JoinSecretDataKey("vault-approle-secret", "secret-id")]), "key secret %s secret-id secret data mismatch", keyID)
+			require.Equal(t, "test-role-id", string(keySecret.Data["encryption.apiserver.operator.openshift.io-kms-plugin-secret-vault-approle-secret_role-id"]), "key secret %s role-id secret data mismatch", keyID)
+			require.Equal(t, "test-secret-id", string(keySecret.Data["encryption.apiserver.operator.openshift.io-kms-plugin-secret-vault-approle-secret_secret-id"]), "key secret %s secret-id secret data mismatch", keyID)
 		}
 	}
 

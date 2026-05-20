@@ -285,9 +285,6 @@ func (c *keyController) generateKeySecret(ctx context.Context, keyID uint64, cur
 		}
 
 		if secretName, expectedKeys := referencedSecretName(apiServerEncryption.KMS); len(secretName) > 0 {
-			if err := secrets.ValidateSecretDataKey(secretName); err != nil {
-				return nil, fmt.Errorf("invalid referenced secret name: %w", err)
-			}
 			refSecret, err := c.secretClient.Secrets(openshiftConfigNS).Get(ctx, secretName, metav1.GetOptions{})
 			if err != nil {
 				return nil, fmt.Errorf("failed to get secret %s in openshift-config: %w", secretName, err)
@@ -297,7 +294,9 @@ func (c *keyController) generateKeySecret(ctx context.Context, keyID uint64, cur
 				if !ok {
 					return nil, fmt.Errorf("secret %s in openshift-config is missing required key %q", secretName, key)
 				}
-				ks.KMS.PluginSecretData.Set(secretName, key, v)
+				if err := ks.KMS.PluginSecretData.Set(secretName, key, v); err != nil {
+					return nil, fmt.Errorf("invalid referenced secret name: %w", err)
+				}
 			}
 		}
 	}

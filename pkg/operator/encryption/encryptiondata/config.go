@@ -27,24 +27,55 @@ var (
 // encryption state that doesn't fit into the upstream type.
 type Config struct {
 	Encryption *apiserverconfigv1.EncryptionConfiguration
-	// KMSPlugins maps keyID to plugin-specific configuration,
-	// carried from Key Secrets into the encryption-config Secret.
-	KMSPlugins map[string]configv1.KMSPluginConfig
-	// KMSPluginsSecretData maps keyID to secret data carried from
-	// Key Secrets into the encryption-config Secret.
-	// Structure: keyID → secretName → dataKey → value.
-	KMSPluginsSecretData map[string]state.KMSSecretData
+	KMSPlugins           KMSPlugins
+	KMSPluginsSecretData KMSPluginsSecretData
+}
+
+// KMSPlugins maps keyID to plugin-specific configuration,
+// carried from Key Secrets into the encryption-config Secret.
+type KMSPlugins map[string]configv1.KMSPluginConfig
+
+func (d *KMSPlugins) Set(keyID string, plugin configv1.KMSPluginConfig) {
+	if *d == nil {
+		*d = KMSPlugins{}
+	}
+	(*d)[keyID] = plugin
+}
+
+// KMSPluginsSecretData maps keyID to secret data carried from Key Secrets into the
+// encryption-config Secret. Structure: keyID → KMSSecretData.
+type KMSPluginsSecretData map[string]state.KMSSecretData
+
+func (d *KMSPluginsSecretData) Set(keyID string, data state.KMSSecretData) {
+	if *d == nil {
+		*d = KMSPluginsSecretData{}
+	}
+	(*d)[keyID] = data
 }
 
 func (c *Config) HasEncryptionConfiguration() bool {
 	return c != nil && c.Encryption != nil
 }
 
+func (c *Config) readKMSDataFrom(source map[string][]byte) error {
+	if err := c.KMSPlugins.readFrom(source); err != nil {
+		return err
+	}
+	return c.KMSPluginsSecretData.readFrom(source)
+}
+
+func (c *Config) writeKMSDataTo(target map[string][]byte) error {
+	if err := c.KMSPlugins.writeTo(target); err != nil {
+		return err
+	}
+	return c.KMSPluginsSecretData.writeTo(target)
+}
+
 // FromEncryptionState converts encryption state to Config.
 func FromEncryptionState(encryptionState map[schema.GroupResource]state.GroupResourceState) (*Config, error) {
 	resourceConfigs := make([]apiserverconfigv1.ResourceConfiguration, 0, len(encryptionState))
-	var kmsPlugins map[string]configv1.KMSPluginConfig
-	var kmsPluginsSecretData map[string]state.KMSSecretData
+	var kmsPlugins KMSPlugins
+	var kmsPluginsSecretData KMSPluginsSecretData
 
 	for gr, grKeys := range encryptionState {
 		resourceConfigs = append(resourceConfigs, apiserverconfigv1.ResourceConfiguration{
@@ -59,29 +90,21 @@ func FromEncryptionState(encryptionState map[schema.GroupResource]state.GroupRes
 		// identical across duplicates and we only need to keep the first occurrence.
 		for _, key := range grKeys.ReadKeys {
 			if key.HasKMSPlugin() {
-				if kmsPlugins == nil {
-					kmsPlugins = map[string]configv1.KMSPluginConfig{}
-				}
 				if plugin, exists := kmsPlugins[key.Key.Name]; exists {
-					// Sanity check: the same keyID seen from a different resource must carry
-					// an identical plugin config, since they originate from the same Key Secret.
 					if !equality.Semantic.DeepEqual(plugin, key.KMS.Plugin) {
 						return nil, fmt.Errorf("KMS plugin config mismatch for keyID %s: configs from different resources must be identical", key.Key.Name)
 					}
 				} else {
-					kmsPlugins[key.Key.Name] = key.KMS.Plugin
+					kmsPlugins.Set(key.Key.Name, key.KMS.Plugin)
 				}
 			}
 			if key.HasKMSSecretData() {
-				if kmsPluginsSecretData == nil {
-					kmsPluginsSecretData = map[string]state.KMSSecretData{}
-				}
 				if existing, exists := kmsPluginsSecretData[key.Key.Name]; exists {
-					if !equality.Semantic.DeepEqual(existing.Get(), key.KMS.PluginSecretData.Get()) {
+					if !equality.Semantic.DeepEqual(existing.Entries, key.KMS.PluginSecretData.Entries) {
 						return nil, fmt.Errorf("KMS secret data mismatch for keyID %s: secret data from different resources must be identical", key.Key.Name)
 					}
 				} else {
-					kmsPluginsSecretData[key.Key.Name] = key.KMS.PluginSecretData
+					kmsPluginsSecretData.Set(key.Key.Name, key.KMS.PluginSecretData)
 				}
 			}
 		}

@@ -11,11 +11,7 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	apiserverconfigv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 
-	configv1 "github.com/openshift/api/config/v1"
-
 	"github.com/openshift/library-go/pkg/operator/encryption/encoding"
-	"github.com/openshift/library-go/pkg/operator/encryption/kms"
-	"github.com/openshift/library-go/pkg/operator/encryption/secrets"
 	"github.com/openshift/library-go/pkg/operator/encryption/state"
 )
 
@@ -38,57 +34,11 @@ func FromSecret(encryptionConfigSecret *corev1.Secret) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	var kmsPlugins map[string]configv1.KMSPluginConfig
-	for key, value := range encryptionConfigSecret.Data {
-		// Not all data keys are plugin configs — the Secret also contains the
-		// encryption-config entry, so skip keys that don't match the pattern.
-		keyID, found, err := kms.KeyIDFromPluginConfigSecretDataKey(key)
-		if err != nil {
-			return nil, fmt.Errorf("failed to extract keyID from data key %s: %w", key, err)
-		}
-		if !found {
-			continue
-		}
-		pluginConfig, err := encoding.DecodeKMSPluginConfig(value)
-		if err != nil {
-			return nil, fmt.Errorf("failed to decode KMS plugin config for key %s: %w", keyID, err)
-		}
-		if kmsPlugins == nil {
-			kmsPlugins = map[string]configv1.KMSPluginConfig{}
-		}
-		if _, exists := kmsPlugins[keyID]; exists {
-			return nil, fmt.Errorf("duplicate KMS plugin config for keyID %s", keyID)
-		}
-		kmsPlugins[keyID] = pluginConfig
+	cfg := &Config{Encryption: encryptionConfig}
+	if err := cfg.readKMSDataFrom(encryptionConfigSecret.Data); err != nil {
+		return nil, err
 	}
-
-	// Extract secret data entries from the encryption-config Secret.
-	// Data keys follow the format "kms-plugin-secret-{secretName}_{dataKey}-{keyID}"
-	// (e.g. "kms-plugin-secret-app-role_role-id-1"). keyIDFromSecretDataKey
-	// returns the keyID (e.g. "1") and the combined key (e.g. "app-role_role-id"),
-	// which is then split on "_" to recover secretName and dataKey.
-	var kmsPluginsSecretData map[string]state.KMSSecretData
-	for key, value := range encryptionConfigSecret.Data {
-		keyID, combinedKey, found, err := keyIDFromSecretDataKey(key)
-		if err != nil {
-			return nil, fmt.Errorf("failed to extract keyID from secret data key %s: %w", key, err)
-		}
-		if !found {
-			continue
-		}
-		secretName, dataKey, err := secrets.SplitSecretDataKey(combinedKey)
-		if err != nil {
-			return nil, fmt.Errorf("failed to parse secret data key %s: %w", key, err)
-		}
-		if kmsPluginsSecretData == nil {
-			kmsPluginsSecretData = map[string]state.KMSSecretData{}
-		}
-		sd := kmsPluginsSecretData[keyID]
-		sd.Set(secretName, dataKey, value)
-		kmsPluginsSecretData[keyID] = sd
-	}
-
-	return &Config{Encryption: encryptionConfig, KMSPlugins: kmsPlugins, KMSPluginsSecretData: kmsPluginsSecretData}, nil
+	return cfg, nil
 }
 
 func ToSecret(ns, name string, secretData *Config) (*corev1.Secret, error) {
@@ -120,32 +70,8 @@ func ToSecret(ns, name string, secretData *Config) (*corev1.Secret, error) {
 		Type: corev1.SecretTypeOpaque,
 	}
 
-	for keyID, pluginConfig := range secretData.KMSPlugins {
-		encodedPlugin, err := encoding.EncodeKMSPluginConfig(pluginConfig)
-		if err != nil {
-			return nil, fmt.Errorf("failed to encode KMS plugin config for key %s: %w", keyID, err)
-		}
-		dataKey, err := kms.ToPluginConfigSecretDataKeyFor(keyID)
-		if err != nil {
-			return nil, err
-		}
-		s.Data[dataKey] = encodedPlugin
-	}
-
-	// Write secret data entries to the encryption-config Secret.
-	// Each secretName and dataKey are joined with "_" and combined with the keyID
-	// (e.g. "1") to produce "kms-plugin-secret-app-role_role-id-1".
-	for keyID, perKeyData := range secretData.KMSPluginsSecretData {
-		for secretName, secretData := range perKeyData.Get() {
-			for dataKey, value := range secretData {
-				combinedKey := secrets.JoinSecretDataKey(secretName, dataKey)
-				encConfigKey, err := toSecretDataKeyFor(combinedKey, keyID)
-				if err != nil {
-					return nil, err
-				}
-				s.Data[encConfigKey] = value
-			}
-		}
+	if err := secretData.writeKMSDataTo(s.Data); err != nil {
+		return nil, err
 	}
 
 	return s, nil
@@ -194,25 +120,74 @@ func ExtractUniqueAndSortedKMSConfigurations(secretData *Config) ([]*apiserverco
 	return result, nil
 }
 
-func toSecretDataKeyFor(secretDataKey, keyID string) (string, error) {
-	if _, err := strconv.ParseUint(keyID, 10, 64); err != nil {
-		return "", fmt.Errorf("invalid keyID %q: must be a non-negative integer", keyID)
+const pluginConfigDataKeyPrefix = "kms-plugin-config-"
+
+func (d *KMSPlugins) writeTo(target map[string][]byte) error {
+	for keyID, pluginConfig := range *d {
+		if _, err := strconv.ParseUint(keyID, 10, 64); err != nil {
+			return fmt.Errorf("invalid keyID %q: must be a non-negative integer", keyID)
+		}
+		encoded, err := encoding.EncodeKMSPluginConfig(pluginConfig)
+		if err != nil {
+			return fmt.Errorf("failed to encode KMS plugin config for key %s: %w", keyID, err)
+		}
+		target[pluginConfigDataKeyPrefix+keyID] = encoded
 	}
-	return encryptionConfigSecretDataPrefix + secretDataKey + "-" + keyID, nil
+	return nil
 }
 
-func keyIDFromSecretDataKey(dataKey string) (string, string, bool, error) {
-	rest, found := strings.CutPrefix(dataKey, encryptionConfigSecretDataPrefix)
-	if !found {
-		return "", "", false, nil
+func (d *KMSPlugins) readFrom(source map[string][]byte) error {
+	for key, value := range source {
+		keyID, found := strings.CutPrefix(key, pluginConfigDataKeyPrefix)
+		if !found || len(keyID) == 0 {
+			continue
+		}
+		if _, err := strconv.ParseUint(keyID, 10, 64); err != nil {
+			return fmt.Errorf("failed to extract keyID from data key %s: invalid keyID %q", key, keyID)
+		}
+		pluginConfig, err := encoding.DecodeKMSPluginConfig(value)
+		if err != nil {
+			return fmt.Errorf("failed to decode KMS plugin config for key %s: %w", keyID, err)
+		}
+		if _, exists := (*d)[keyID]; exists {
+			return fmt.Errorf("duplicate KMS plugin config for keyID %s", keyID)
+		}
+		d.Set(keyID, pluginConfig)
 	}
-	i := strings.LastIndex(rest, "-")
-	if i < 1 {
-		return "", "", false, nil
+	return nil
+}
+
+func (d *KMSPluginsSecretData) writeTo(target map[string][]byte) error {
+	for keyID, perKeyData := range *d {
+		if _, err := strconv.ParseUint(keyID, 10, 64); err != nil {
+			return fmt.Errorf("invalid keyID %q: must be a non-negative integer", keyID)
+		}
+		for flatKey, value := range perKeyData.FlatEntries() {
+			target[encryptionConfigSecretDataPrefix+flatKey+"-"+keyID] = value
+		}
 	}
-	keyID := rest[i+1:]
-	if _, err := strconv.ParseUint(keyID, 10, 64); err != nil {
-		return "", "", false, fmt.Errorf("invalid keyID %q: must be a non-negative integer", keyID)
+	return nil
+}
+
+func (d *KMSPluginsSecretData) readFrom(source map[string][]byte) error {
+	for key, value := range source {
+		rest, found := strings.CutPrefix(key, encryptionConfigSecretDataPrefix)
+		if !found {
+			continue
+		}
+		i := strings.LastIndex(rest, "-")
+		if i < 1 {
+			continue
+		}
+		keyID := rest[i+1:]
+		if _, err := strconv.ParseUint(keyID, 10, 64); err != nil {
+			return fmt.Errorf("failed to extract keyID from key %s: invalid keyID %q", key, keyID)
+		}
+		sd := (*d)[keyID]
+		if err := sd.SetFromCombinedKey(rest[:i], value); err != nil {
+			return fmt.Errorf("failed to parse key %s: %w", key, err)
+		}
+		d.Set(keyID, sd)
 	}
-	return keyID, rest[:i], true, nil
+	return nil
 }

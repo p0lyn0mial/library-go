@@ -93,11 +93,9 @@ func ToKeyState(s *corev1.Secret) (state.KeyState, error) {
 			if !found || len(rawKey) == 0 {
 				continue
 			}
-			secretName, secretKey, err := SplitSecretDataKey(rawKey)
-			if err != nil {
+			if err := key.KMS.PluginSecretData.SetFromCombinedKey(rawKey, value); err != nil {
 				return state.KeyState{}, fmt.Errorf("secret %s/%s has malformed secret data key %q: %w", s.Namespace, s.Name, dataKey, err)
 			}
-			key.KMS.PluginSecretData.Set(secretName, secretKey, value)
 		}
 		key.Mode = keyMode
 	default:
@@ -172,14 +170,8 @@ func FromKeyState(component string, ks state.KeyState) (*corev1.Secret, error) {
 	}
 
 	if ks.HasKMSSecretData() {
-		for secretName, secretData := range ks.KMS.PluginSecretData.Get() {
-			for dataKey, value := range secretData {
-				// Write referenced secret data to the Key Secret using the format:
-				// "encryption.apiserver.operator.openshift.io-kms-plugin-secret-{secretName}_{dataKey}"
-				// "_" separates secretName from dataKey because "_" is forbidden in
-				// Kubernetes secret names, making the split unambiguous.
-				s.Data[encryptionSecretKMSSecretDataPrefix+JoinSecretDataKey(secretName, dataKey)] = value
-			}
+		for flatKey, value := range ks.KMS.PluginSecretData.FlatEntries() {
+			s.Data[encryptionSecretKMSSecretDataPrefix+flatKey] = value
 		}
 	}
 
@@ -209,26 +201,3 @@ func ListKeySecrets(ctx context.Context, secretClient corev1client.SecretsGetter
 	return encryptionSecrets, nil
 }
 
-// JoinSecretDataKey combines a secret name and data key using the
-// separator. The result is used as a key in KMSSecretData and in Secret data keys.
-func JoinSecretDataKey(secretName, dataKey string) string {
-	return secretName + secretDataKeySeparator + dataKey
-}
-
-// SplitSecretDataKey splits a combined key into secret name and data key.
-func SplitSecretDataKey(combined string) (string, string, error) {
-	parts := strings.SplitN(combined, secretDataKeySeparator, 2)
-	if len(parts) != 2 {
-		return "", "", fmt.Errorf("invalid secret data key %q: expected format {secretName}%s{dataKey}", combined, secretDataKeySeparator)
-	}
-	return parts[0], parts[1], nil
-}
-
-// ValidateSecretDataKey returns an error if the given string contains the
-// separator used between secret name and data key.
-func ValidateSecretDataKey(s string) error {
-	if strings.Contains(s, secretDataKeySeparator) {
-		return fmt.Errorf("%q must not contain %q", s, secretDataKeySeparator)
-	}
-	return nil
-}

@@ -1,12 +1,16 @@
 package state
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	configv1 "github.com/openshift/api/config/v1"
 	"k8s.io/apimachinery/pkg/runtime/schema"
 	apiserverconfigv1 "k8s.io/apiserver/pkg/apis/apiserver/v1"
 )
+
+const secretNameSeparator = "_"
 
 // These annotations try to scare anyone away from editing the encryption secrets.  It is trivial for
 // an external actor to break the invariants of the state machine and render the cluster unrecoverable.
@@ -54,7 +58,7 @@ func (k *KeyState) HasKMSPlugin() bool {
 }
 
 func (k *KeyState) HasKMSSecretData() bool {
-	return k != nil && k.KMS != nil && len(k.KMS.PluginSecretData.Get()) > 0
+	return k != nil && k.KMS != nil && len(k.KMS.PluginSecretData.Entries) > 0
 }
 
 // KMSState stores all KMS encryption mode related configurations
@@ -75,14 +79,10 @@ type KMSSecretData struct {
 	Entries map[string]map[string][]byte
 }
 
-func (d *KMSSecretData) Get() map[string]map[string][]byte {
-	if d.Entries == nil {
-		return map[string]map[string][]byte{}
+func (d *KMSSecretData) Set(secretName, dataKey string, value []byte) error {
+	if strings.Contains(secretName, secretNameSeparator) {
+		return fmt.Errorf("secret name %q must not contain %q", secretName, secretNameSeparator)
 	}
-	return d.Entries
-}
-
-func (d *KMSSecretData) Set(secretName, dataKey string, value []byte) {
 	if d.Entries == nil {
 		d.Entries = map[string]map[string][]byte{}
 	}
@@ -90,6 +90,28 @@ func (d *KMSSecretData) Set(secretName, dataKey string, value []byte) {
 		d.Entries[secretName] = map[string][]byte{}
 	}
 	d.Entries[secretName][dataKey] = value
+	return nil
+}
+
+// SetFromCombinedKey splits a combined key of the form "secretName_dataKey"
+// and stores the value.
+func (d *KMSSecretData) SetFromCombinedKey(combinedKey string, value []byte) error {
+	parts := strings.SplitN(combinedKey, secretNameSeparator, 2)
+	if len(parts) != 2 {
+		return fmt.Errorf("invalid combined key %q: expected format {secretName}%s{dataKey}", combinedKey, secretNameSeparator)
+	}
+	return d.Set(parts[0], parts[1], value)
+}
+
+// FlatEntries returns the stored data as a flat map keyed by "secretName_dataKey".
+func (d *KMSSecretData) FlatEntries() map[string][]byte {
+	result := map[string][]byte{}
+	for secretName, keys := range d.Entries {
+		for dataKey, value := range keys {
+			result[secretName+secretNameSeparator+dataKey] = value
+		}
+	}
+	return result
 }
 
 type MigrationState struct {

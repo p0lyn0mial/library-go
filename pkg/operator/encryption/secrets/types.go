@@ -60,13 +60,8 @@ const (
 
 	// encryptionSecretKMSSecretDataPrefix is the data field key prefix for secret data values
 	// fetched from the referenced secret in openshift-config. The full data key is
-	// constructed as prefix + secretName + separator + dataKey.
+	// constructed as prefix + combined key from KMSSecretData.FlatEntries().
 	encryptionSecretKMSSecretDataPrefix = "encryption.apiserver.operator.openshift.io-kms-plugin-secret-"
-
-	// secretDataKeySeparator separates the secret name from the data key.
-	// Underscore is used because it is forbidden in Kubernetes secret/configmap
-	// names, preventing collisions.
-	secretDataKeySeparator = "_"
 )
 
 // MigratedGroupResources is the data structured stored in the

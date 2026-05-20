@@ -803,7 +803,7 @@ func TestFromEncryptionStateKMSSecretDataValidation(t *testing.T) {
 		name            string
 		encryptionState map[schema.GroupResource]state.GroupResourceState
 		expectedErr     string
-		expectedData    map[string]state.KMSSecretData
+		expectedData    encryptiondata.KMSPluginsSecretData
 	}{
 		{
 			name: "matching secret data across resources",
@@ -843,7 +843,7 @@ func TestFromEncryptionStateKMSSecretDataValidation(t *testing.T) {
 					}},
 				},
 			},
-			expectedData: map[string]state.KMSSecretData{
+			expectedData: encryptiondata.KMSPluginsSecretData{
 				"1": {Entries: map[string]map[string][]byte{
 					"vault-approle-secret": {
 						"role-id":   []byte("test-role-id"),
@@ -1007,7 +1007,7 @@ func TestSecretRoundtrip(t *testing.T) {
 				KMSPlugins: map[string]configv1.KMSPluginConfig{
 					"1": encryptiontesting.DefaultKMSPluginConfig,
 				},
-				KMSPluginsSecretData: map[string]state.KMSSecretData{
+				KMSPluginsSecretData: encryptiondata.KMSPluginsSecretData{
 					"1": {Entries: map[string]map[string][]byte{
 						"vault-approle-secret": {
 							"role-id":   []byte("test-role-id"),
@@ -1050,7 +1050,7 @@ func TestSecretRoundtrip(t *testing.T) {
 					"1": encryptiontesting.DefaultKMSPluginConfig,
 					"2": encryptiontesting.DefaultKMSPluginConfig,
 				},
-				KMSPluginsSecretData: map[string]state.KMSSecretData{
+				KMSPluginsSecretData: encryptiondata.KMSPluginsSecretData{
 					"1": {Entries: map[string]map[string][]byte{
 						"vault-approle-secret": {
 							"role-id":   []byte("role-id-1"),
@@ -1139,13 +1139,13 @@ func TestToSecretSecretDataEdgeCases(t *testing.T) {
 
 	tests := []struct {
 		name             string
-		secretData       map[string]state.KMSSecretData
+		secretData       encryptiondata.KMSPluginsSecretData
 		wantErr          bool
 		expectedDataKeys map[string][]byte
 	}{
 		{
 			name: "invalid keyID returns error",
-			secretData: map[string]state.KMSSecretData{
+			secretData: encryptiondata.KMSPluginsSecretData{
 				"abc": {Entries: map[string]map[string][]byte{
 					"vault-approle-secret": {
 						"role-id": []byte("test"),
@@ -1160,11 +1160,11 @@ func TestToSecretSecretDataEdgeCases(t *testing.T) {
 		},
 		{
 			name:       "empty secret data produces no extra keys",
-			secretData: map[string]state.KMSSecretData{},
+			secretData: encryptiondata.KMSPluginsSecretData{},
 		},
 		{
 			name: "valid secret data produces correct data keys",
-			secretData: map[string]state.KMSSecretData{
+			secretData: encryptiondata.KMSPluginsSecretData{
 				"1": {Entries: map[string]map[string][]byte{
 					"vault-approle-secret": {
 						"role-id":   []byte("test-role-id"),
@@ -1179,7 +1179,7 @@ func TestToSecretSecretDataEdgeCases(t *testing.T) {
 		},
 		{
 			name: "multiple secrets within same keyID",
-			secretData: map[string]state.KMSSecretData{
+			secretData: encryptiondata.KMSPluginsSecretData{
 				"1": {Entries: map[string]map[string][]byte{
 					"secret-a": {
 						"key-1": []byte("val-a1"),
@@ -1254,7 +1254,7 @@ func TestFromSecretSecretData(t *testing.T) {
 	tests := []struct {
 		name         string
 		extraData    map[string][]byte
-		expectedData map[string]state.KMSSecretData
+		expectedData encryptiondata.KMSPluginsSecretData
 	}{
 		{
 			name: "secret data keys are parsed correctly",
@@ -1262,7 +1262,7 @@ func TestFromSecretSecretData(t *testing.T) {
 				"kms-plugin-secret-vault-approle-secret_role-id-1":   []byte("test-role-id"),
 				"kms-plugin-secret-vault-approle-secret_secret-id-1": []byte("test-secret-id"),
 			},
-			expectedData: map[string]state.KMSSecretData{
+			expectedData: encryptiondata.KMSPluginsSecretData{
 				"1": {Entries: map[string]map[string][]byte{
 					"vault-approle-secret": {
 						"role-id":   []byte("test-role-id"),
@@ -1289,7 +1289,7 @@ func TestFromSecretSecretData(t *testing.T) {
 				"kms-plugin-secret-vault-approle-secret_role-id-2":   []byte("role-id-2"),
 				"kms-plugin-secret-vault-approle-secret_secret-id-2": []byte("secret-id-2"),
 			},
-			expectedData: map[string]state.KMSSecretData{
+			expectedData: encryptiondata.KMSPluginsSecretData{
 				"1": {Entries: map[string]map[string][]byte{
 					"vault-approle-secret": {
 						"role-id":   []byte("role-id-1"),
