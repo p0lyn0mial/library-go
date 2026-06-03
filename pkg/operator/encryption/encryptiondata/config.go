@@ -59,21 +59,6 @@ func (d *KMSPluginsSecretData) SetFromRawKey(keyID, rawKey string, value []byte)
 	return nil
 }
 
-// FlatEntriesByKeyID returns the stored data as a map of keyID to flat entries,
-// where each flat entry is keyed by "secretName_dataKey".
-func (d *KMSPluginsSecretData) FlatEntriesByKeyID() map[string]map[string][]byte {
-	if d.ByKeyID == nil {
-		return nil
-	}
-	result := map[string]map[string][]byte{}
-	for keyID, sd := range d.ByKeyID {
-		if flat := sd.FlatEntries(); flat != nil {
-			result[keyID] = flat
-		}
-	}
-	return result
-}
-
 func (c *Config) HasEncryptionConfiguration() bool {
 	return c != nil && c.Encryption != nil
 }
