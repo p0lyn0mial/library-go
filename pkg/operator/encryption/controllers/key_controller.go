@@ -84,6 +84,10 @@ type keyController struct {
 	encryptionStatusProvider kms.EncryptionStatusProvider
 
 	unsupportedConfigPrefix []string
+
+	getAPIServerAndOperatorSpecFn    func(context.Context) (*configv1.APIServer, *operatorv1.OperatorSpec, error)
+	deployedEncryptionConfigSecretFn func(context.Context) (*corev1.Secret, bool, error)
+	listKeySecretsFn                 func(context.Context) ([]*corev1.Secret, error)
 }
 
 func NewKeyController(
@@ -119,6 +123,22 @@ func NewKeyController(
 		configMapClient:          configMapClient,
 
 		encryptionStatusProvider: encryptionStatusProvider,
+	}
+
+	c.getAPIServerAndOperatorSpecFn = func(ctx context.Context) (*configv1.APIServer, *operatorv1.OperatorSpec, error) {
+		apiServer, err := c.apiServerClient.Get(ctx, "cluster", metav1.GetOptions{})
+		if err != nil {
+			return nil, nil, err
+		}
+		operatorSpec, _, _, err := c.operatorClient.GetOperatorState()
+		if err != nil {
+			return nil, nil, err
+		}
+		return apiServer, operatorSpec, nil
+	}
+	c.deployedEncryptionConfigSecretFn = c.deployer.DeployedEncryptionConfigSecret
+	c.listKeySecretsFn = func(ctx context.Context) ([]*corev1.Secret, error) {
+		return secrets.ListKeySecrets(ctx, c.secretClient, c.encryptionSecretSelector)
 	}
 
 	return factory.New().
@@ -169,7 +189,7 @@ func (c *keyController) sync(ctx context.Context, syncCtx factory.SyncContext) (
 		return err // we will get re-kicked when the operator status updates
 	}
 
-	keySecret, err := c.checkAndCreateKeys(ctx, syncCtx, c.provider.EncryptedGRs())
+	keySecret, err := c.checkAndCreateKeys(ctx, syncCtx, c.provider.EncryptedGRs(), c.getAPIServerAndOperatorSpecFn, c.deployedEncryptionConfigSecretFn, c.listKeySecretsFn)
 	if err == nil && keySecret != nil {
 		keyID, _ := state.NameToKeyID(keySecret.Name)
 		_, createErr := c.secretClient.Secrets("openshift-config-managed").Create(ctx, keySecret, metav1.CreateOptions{})
@@ -195,18 +215,23 @@ func (c *keyController) sync(ctx context.Context, syncCtx factory.SyncContext) (
 	return err
 }
 
-func (c *keyController) checkAndCreateKeys(ctx context.Context, syncContext factory.SyncContext, encryptedGRs []schema.GroupResource) (*corev1.Secret, error) {
-	currentMode, externalReason, apiEncryptionConfiguration, err := c.getCurrentModeReasonAndEncryptionConfig(ctx)
+func (c *keyController) checkAndCreateKeys(
+	ctx context.Context,
+	syncContext factory.SyncContext,
+	encryptedGRs []schema.GroupResource,
+	getAPIServerAndOperatorSpec func(context.Context) (*configv1.APIServer, *operatorv1.OperatorSpec, error),
+	deployedEncryptionConfigSecret func(context.Context) (*corev1.Secret, bool, error),
+	listKeySecrets func(context.Context) ([]*corev1.Secret, error),
+) (*corev1.Secret, error) {
+	currentMode, externalReason, apiEncryptionConfiguration, err := c.getCurrentModeReasonAndEncryptionConfig(ctx, getAPIServerAndOperatorSpec)
 	if err != nil {
 		return nil, err
 	}
 
 	currentConfig, desiredEncryptionState, encryptionSecrets, isProgressingReason, err := statemachine.GetEncryptionConfigAndState(
 		ctx,
-		c.deployer.DeployedEncryptionConfigSecret,
-		func(ctx context.Context) ([]*corev1.Secret, error) {
-			return secrets.ListKeySecrets(ctx, c.secretClient, c.encryptionSecretSelector)
-		},
+		deployedEncryptionConfigSecret,
+		listKeySecrets,
 		encryptedGRs,
 	)
 	if err != nil {
@@ -402,13 +427,8 @@ func (c *keyController) generateKeySecret(ctx context.Context, keyID uint64, cur
 	return secret, true, nil
 }
 
-func (c *keyController) getCurrentModeReasonAndEncryptionConfig(ctx context.Context) (state.Mode, string, configv1.APIServerEncryption, error) {
-	apiServer, err := c.apiServerClient.Get(ctx, "cluster", metav1.GetOptions{})
-	if err != nil {
-		return "", "", configv1.APIServerEncryption{}, err
-	}
-
-	operatorSpec, _, _, err := c.operatorClient.GetOperatorState()
+func (c *keyController) getCurrentModeReasonAndEncryptionConfig(ctx context.Context, getAPIServerAndOperatorSpec func(context.Context) (*configv1.APIServer, *operatorv1.OperatorSpec, error)) (state.Mode, string, configv1.APIServerEncryption, error) {
+	apiServer, operatorSpec, err := getAPIServerAndOperatorSpec(ctx)
 	if err != nil {
 		return "", "", configv1.APIServerEncryption{}, err
 	}
