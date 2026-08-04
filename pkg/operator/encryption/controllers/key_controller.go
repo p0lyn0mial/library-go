@@ -88,6 +88,8 @@ type keyController struct {
 	getAPIServerAndOperatorSpecFn    func(context.Context) (*configv1.APIServer, *operatorv1.OperatorSpec, error)
 	deployedEncryptionConfigSecretFn func(context.Context) (*corev1.Secret, bool, error)
 	listKeySecretsFn                 func(context.Context) ([]*corev1.Secret, error)
+	getKMSPluginSecretFn             func(context.Context, string) (*corev1.Secret, error)
+	getKMSPluginConfigMapFn          func(context.Context, string) (*corev1.ConfigMap, error)
 }
 
 func NewKeyController(
@@ -140,6 +142,12 @@ func NewKeyController(
 	c.listKeySecretsFn = func(ctx context.Context) ([]*corev1.Secret, error) {
 		return secrets.ListKeySecrets(ctx, c.secretClient, c.encryptionSecretSelector)
 	}
+	c.getKMSPluginSecretFn = func(ctx context.Context, name string) (*corev1.Secret, error) {
+		return c.secretClient.Secrets(openshiftConfigNS).Get(ctx, name, metav1.GetOptions{})
+	}
+	c.getKMSPluginConfigMapFn = func(ctx context.Context, name string) (*corev1.ConfigMap, error) {
+		return c.configMapClient.ConfigMaps(openshiftConfigNS).Get(ctx, name, metav1.GetOptions{})
+	}
 
 	return factory.New().
 		WithSync(c.sync).
@@ -189,7 +197,7 @@ func (c *keyController) sync(ctx context.Context, syncCtx factory.SyncContext) (
 		return err // we will get re-kicked when the operator status updates
 	}
 
-	keySecret, err := c.checkAndCreateKeys(ctx, syncCtx, c.provider.EncryptedGRs(), c.getAPIServerAndOperatorSpecFn, c.deployedEncryptionConfigSecretFn, c.listKeySecretsFn)
+	keySecret, err := c.checkAndCreateKeys(ctx, syncCtx, c.provider.EncryptedGRs(), c.getAPIServerAndOperatorSpecFn, c.deployedEncryptionConfigSecretFn, c.listKeySecretsFn, c.getKMSPluginSecretFn, c.getKMSPluginConfigMapFn)
 	if err == nil && keySecret != nil {
 		keyID, _ := state.NameToKeyID(keySecret.Name)
 		_, createErr := c.secretClient.Secrets("openshift-config-managed").Create(ctx, keySecret, metav1.CreateOptions{})
@@ -222,6 +230,8 @@ func (c *keyController) checkAndCreateKeys(
 	getAPIServerAndOperatorSpec func(context.Context) (*configv1.APIServer, *operatorv1.OperatorSpec, error),
 	deployedEncryptionConfigSecret func(context.Context) (*corev1.Secret, bool, error),
 	listKeySecrets func(context.Context) ([]*corev1.Secret, error),
+	getKMSPluginSecret func(context.Context, string) (*corev1.Secret, error),
+	getKMSPluginConfigMap func(context.Context, string) (*corev1.ConfigMap, error),
 ) (*corev1.Secret, error) {
 	currentMode, externalReason, apiEncryptionConfiguration, err := c.getCurrentModeReasonAndEncryptionConfig(ctx, getAPIServerAndOperatorSpec)
 	if err != nil {
@@ -300,7 +310,7 @@ func (c *keyController) checkAndCreateKeys(
 
 	sort.Sort(sort.StringSlice(reasons))
 	internalReason := strings.Join(reasons, ", ")
-	keySecret, preconditionMet, err := c.generateKeySecret(ctx, newKeyID, currentMode, apiEncryptionConfiguration, desiredProviderCfg, internalReason, externalReason)
+	keySecret, preconditionMet, err := c.generateKeySecret(ctx, newKeyID, currentMode, apiEncryptionConfiguration, desiredProviderCfg, internalReason, externalReason, getKMSPluginSecret, getKMSPluginConfigMap)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create key: %v", err)
 	}
@@ -339,7 +349,7 @@ func (c *keyController) validateExistingSecret(ctx context.Context, keySecret *c
 //   - (secret, true,  nil) — preflight passed; caller should persist the key.
 //   - (nil,   false, nil) — preflight still in progress; caller should back off.
 //   - (nil,   false, err) — preflight failed or transient error; caller should surface it.
-func (c *keyController) generateKeySecret(ctx context.Context, keyID uint64, currentMode state.Mode, apiServerEncryption configv1.APIServerEncryption, desiredProviderCfg kmsProviderConfig, internalReason, externalReason string) (*corev1.Secret, bool, error) {
+func (c *keyController) generateKeySecret(ctx context.Context, keyID uint64, currentMode state.Mode, apiServerEncryption configv1.APIServerEncryption, desiredProviderCfg kmsProviderConfig, internalReason, externalReason string, getKMSPluginSecret func(context.Context, string) (*corev1.Secret, error), getKMSPluginConfigMap func(context.Context, string) (*corev1.ConfigMap, error)) (*corev1.Secret, bool, error) {
 	bs := crypto.ModeToNewKeyFunc[currentMode]()
 	ks := state.KeyState{
 		Key: apiserverv1.Key{
@@ -368,7 +378,7 @@ func (c *keyController) generateKeySecret(ctx context.Context, keyID uint64, cur
 		if secretName, expectedKeys, err := desiredProviderCfg.referencedSecretName(); err != nil {
 			return nil, false, err
 		} else if len(secretName) > 0 {
-			refSecret, err = c.secretClient.Secrets(openshiftConfigNS).Get(ctx, secretName, metav1.GetOptions{})
+			refSecret, err = getKMSPluginSecret(ctx, secretName)
 			if err != nil {
 				return nil, false, fmt.Errorf("failed to get secret %s in %s: %w", secretName, openshiftConfigNS, err)
 			}
@@ -387,7 +397,7 @@ func (c *keyController) generateKeySecret(ctx context.Context, keyID uint64, cur
 		if cmName, expectedKeys, err := desiredProviderCfg.referencedConfigMapName(); err != nil {
 			return nil, false, err
 		} else if len(cmName) > 0 {
-			refCM, err = c.configMapClient.ConfigMaps(openshiftConfigNS).Get(ctx, cmName, metav1.GetOptions{})
+			refCM, err = getKMSPluginConfigMap(ctx, cmName)
 			if err != nil {
 				return nil, false, fmt.Errorf("failed to get configmap %s in %s: %w", cmName, openshiftConfigNS, err)
 			}
