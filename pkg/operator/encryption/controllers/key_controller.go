@@ -224,6 +224,12 @@ func (c *keyController) sync(ctx context.Context, syncCtx factory.SyncContext) (
 }
 
 func (c *keyController) computeKeySecret(ctx context.Context, syncContext factory.SyncContext) (*corev1.Secret, error) {
+	ensureKMSPreflightPassedFn := c.ensureKMSPreflightPassed
+	if c.encryptionStatusProvider == nil {
+		// No provider means read-only/compute-only context (e.g. EncryptionComputer).
+		// Skip the preflight gate so callers can observe what key would be created.
+		ensureKMSPreflightPassedFn = func(_ context.Context, _ string) (bool, error) { return true, nil }
+	}
 	return checkAndCreateKeys(
 		ctx, syncContext, c.provider.EncryptedGRs(),
 		c.instanceName, c.unsupportedConfigPrefix,
@@ -232,7 +238,7 @@ func (c *keyController) computeKeySecret(ctx context.Context, syncContext factor
 		c.listKeySecretsFn,
 		c.getKMSPluginSecretFn,
 		c.getKMSPluginConfigMapFn,
-		c.ensureKMSPreflightPassed,
+		ensureKMSPreflightPassedFn,
 	)
 }
 
