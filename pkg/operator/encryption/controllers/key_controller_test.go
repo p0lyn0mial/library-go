@@ -913,7 +913,7 @@ func TestKeyController(t *testing.T) {
 			target := NewKeyController(scenario.targetNamespace, nil, provider, deployer, alwaysFulfilledPreconditions, fakeOperatorClient, fakeApiServerClient, fakeApiServerInformer, kubeInformers, fakeSecretClient, fakeConfigMapClient, scenario.encryptionSecretSelector, eventRecorder, scenario.encryptionStatusProvider)
 
 			// act
-			err = target.Sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
+			err = target.sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
 
 			// validate
 			if err == nil && scenario.expectedError != nil {
@@ -1007,7 +1007,7 @@ func TestKMSMigrationTriggeredFields(t *testing.T) {
 
 			target := NewKeyController("kms", nil, provider, deployer, alwaysFulfilledPreconditions, fakeOperatorClient, fakeApiServerClient, fakeApiServerInformer, kubeInformers, fakeSecretClient, fakeConfigMapClient, metav1.ListOptions{}, eventRecorder, sp)
 
-			err = target.Sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
+			err = target.sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
 			require.NoError(t, err)
 
 			expectedActions := []string{"list:pods:kms", "get:secrets:kms", "list:secrets:openshift-config-managed", "get:secrets:openshift-config", "get:configmaps:openshift-config", "create:secrets:openshift-config-managed", "create:events:kms"}

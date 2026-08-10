@@ -51,58 +51,11 @@ type stateController struct {
 
 	deployedEncryptionConfigSecretFn func(context.Context) (*corev1.Secret, bool, error)
 	listKeySecretsFn                 func(context.Context) ([]*corev1.Secret, error)
-}
 
-// newStateControllerInternal creates and fully initialises a *stateController
-// without registering it with any informer framework. Callers that need a
-// running controller should also call newStateControllerFactory; callers that
-// only need the compute path (e.g. EncryptionComputer) can use the struct directly.
-func newStateControllerInternal(
-	instanceName string,
-	provider Provider,
-	deployer statemachine.Deployer,
-	preconditionsFulfilledFn preconditionsFulfilled,
-	operatorClient operatorv1helpers.OperatorClient,
-	secretClient corev1client.SecretsGetter,
-	encryptionSecretSelector metav1.ListOptions,
-) *stateController {
-	c := &stateController{
-		operatorClient:         operatorClient,
-		instanceName:           instanceName,
-		controllerInstanceName: factory.ControllerInstanceName(instanceName, "EncryptionState"),
-
-		encryptionSecretSelector: encryptionSecretSelector,
-		secretClient:             secretClient,
-		deployer:                 deployer,
-		provider:                 provider,
-		preconditionsFulfilledFn: preconditionsFulfilledFn,
-	}
-
-	c.deployedEncryptionConfigSecretFn = c.deployer.DeployedEncryptionConfigSecret
-	c.listKeySecretsFn = func(ctx context.Context) ([]*corev1.Secret, error) {
-		return secrets.ListKeySecrets(ctx, c.secretClient, c.encryptionSecretSelector)
-	}
-
-	return c
-}
-
-// newStateControllerFactory wraps an already-initialised *stateController in a
-// factory.Controller, registering it with the supplied informers.
-func newStateControllerFactory(
-	c *stateController,
-	apiServerConfigInformer configv1informers.APIServerInformer,
-	kubeInformersForNamespaces operatorv1helpers.KubeInformersForNamespaces,
-	eventRecorder events.Recorder,
-) factory.Controller {
-	return factory.New().ResyncEvery(time.Minute).WithSync(c.sync).WithControllerInstanceName(c.controllerInstanceName).WithInformers(
-		c.operatorClient.Informer(),
-		kubeInformersForNamespaces.InformersFor("openshift-config-managed").Core().V1().Secrets().Informer(),
-		apiServerConfigInformer.Informer(), // do not remove, used by the precondition checker
-		c.deployer,
-	).ToController(
-		c.controllerInstanceName,
-		eventRecorder.WithComponentSuffix("encryption-state-controller"),
-	)
+	// fields used only by ToFactoryController
+	apiServerConfigInformer    configv1informers.APIServerInformer
+	kubeInformersForNamespaces operatorv1helpers.KubeInformersForNamespaces
+	eventRecorder              events.Recorder
 }
 
 func NewStateController(
@@ -116,9 +69,43 @@ func NewStateController(
 	secretClient corev1client.SecretsGetter,
 	encryptionSecretSelector metav1.ListOptions,
 	eventRecorder events.Recorder,
-) factory.Controller {
-	c := newStateControllerInternal(instanceName, provider, deployer, preconditionsFulfilledFn, operatorClient, secretClient, encryptionSecretSelector)
-	return newStateControllerFactory(c, apiServerConfigInformer, kubeInformersForNamespaces, eventRecorder)
+) *stateController {
+	c := &stateController{
+		operatorClient:         operatorClient,
+		instanceName:           instanceName,
+		controllerInstanceName: factory.ControllerInstanceName(instanceName, "EncryptionState"),
+
+		encryptionSecretSelector: encryptionSecretSelector,
+		secretClient:             secretClient,
+		deployer:                 deployer,
+		provider:                 provider,
+		preconditionsFulfilledFn: preconditionsFulfilledFn,
+
+		apiServerConfigInformer:    apiServerConfigInformer,
+		kubeInformersForNamespaces: kubeInformersForNamespaces,
+		eventRecorder:              eventRecorder,
+	}
+
+	c.deployedEncryptionConfigSecretFn = c.deployer.DeployedEncryptionConfigSecret
+	c.listKeySecretsFn = func(ctx context.Context) ([]*corev1.Secret, error) {
+		return secrets.ListKeySecrets(ctx, c.secretClient, c.encryptionSecretSelector)
+	}
+
+	return c
+}
+
+// ToFactoryController wraps this stateController in a factory.Controller so it
+// can be added to a controller set and run.
+func (c *stateController) ToFactoryController() factory.Controller {
+	return factory.New().ResyncEvery(time.Minute).WithSync(c.sync).WithControllerInstanceName(c.controllerInstanceName).WithInformers(
+		c.operatorClient.Informer(),
+		c.kubeInformersForNamespaces.InformersFor("openshift-config-managed").Core().V1().Secrets().Informer(),
+		c.apiServerConfigInformer.Informer(), // do not remove, used by the precondition checker
+		c.deployer,
+	).ToController(
+		c.controllerInstanceName,
+		c.eventRecorder.WithComponentSuffix("encryption-state-controller"),
+	)
 }
 
 func (c *stateController) sync(ctx context.Context, syncCtx factory.SyncContext) (err error) {

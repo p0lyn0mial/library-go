@@ -40,7 +40,7 @@ func NewControllers(
 	resourceSyncer *resourcesynccontroller.ResourceSyncController,
 	encryptionStatusProvider kms.EncryptionStatusProvider,
 	preflightDeployer controllers.KMSPreflightDeployer,
-) (*controllers.EncryptionComputer, Controllers, error) {
+) (Controllers, error) {
 	// avoid using the CachedSecretGetter as we need strong guarantees that our encryptionSecretSelector works
 	// otherwise we could see secrets from a different component (which will break our keyID invariants)
 	// this is fine in terms of performance since these controllers will be idle most of the time
@@ -49,7 +49,7 @@ func NewControllers(
 
 	encryptionEnabledChecker, err := newEncryptionEnabledPrecondition(apiServerInformer.Lister(), kubeInformersForNamespaces, encryptionSecretSelector.LabelSelector, component)
 	if err != nil {
-		return nil, nil, err
+		return nil, err
 	}
 
 	// for testing resourceSyncer might be nil
@@ -59,13 +59,11 @@ func NewControllers(
 			resourcesynccontroller.ResourceLocation{Namespace: "openshift-config-managed", Name: fmt.Sprintf("%s-%s", encryptiondata.EncryptionConfSecretName, component)},
 			encryptionEnabledChecker.PreconditionFulfilled,
 		); err != nil {
-			return nil, nil, err
+			return nil, err
 		}
 	}
 
-	// Build the key and state controllers together with the EncryptionComputer so that
-	// all three share the same underlying *keyController and *stateController instances.
-	computer, keyController, stateController := controllers.NewEncryptionComputerWithControllers(
+	keyController := controllers.NewKeyController(
 		component,
 		unsupportedConfigPrefix,
 		provider,
@@ -81,10 +79,23 @@ func NewControllers(
 		eventRecorder,
 		encryptionStatusProvider,
 	)
+	stateController := controllers.NewStateController(
+		component,
+		provider,
+		deployer,
+		encryptionEnabledChecker.PreconditionFulfilled,
+		operatorClient,
+		apiServerInformer,
+		kubeInformersForNamespaces,
+		secretsClient,
+		encryptionSecretSelector,
+		eventRecorder,
+	)
+	computer := controllers.NewEncryptionComputer(keyController, stateController)
 
 	encryptionControllers := []factory.Controller{
-		keyController,
-		stateController,
+		keyController.ToFactoryController(),
+		stateController.ToFactoryController(),
 		controllers.NewPruneController(
 			component,
 			provider,
@@ -138,7 +149,7 @@ func NewControllers(
 		eventRecorder,
 	))
 
-	return computer, encryptionControllers, nil
+	return encryptionControllers, nil
 }
 
 type Controllers []factory.Controller

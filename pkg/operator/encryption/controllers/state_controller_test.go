@@ -1241,7 +1241,7 @@ func TestStateController(t *testing.T) {
 			)
 
 			// act
-			err = target.Sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
+			err = target.sync(context.TODO(), factory.NewSyncContext("test", eventRecorder))
 
 			// validate
 			if err == nil && scenario.expectedError != nil {

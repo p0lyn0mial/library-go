@@ -157,17 +157,17 @@ type: Opaque
 			computer := newTestEncryptionComputer(scenario.existingKeySecrets)
 			syncCtx := newTestSyncContext()
 
-			gotNewKeySecret, err := computer.ComputeKeySecret(context.Background(), syncCtx)
+			gotNewKeySecret, err := computer.keyController.computeKeySecret(context.Background(), syncCtx)
 			if err != nil {
-				t.Fatalf("ComputeKeySecret: %v", err)
+				t.Fatalf("computeKeySecret: %v", err)
 			}
 			if !equality.Semantic.DeepEqual(gotNewKeySecret, mustParseSecret(t, scenario.wantNewKeySecret)) {
 				t.Errorf("new key secret mismatch:\n%s", diff.Diff(mustParseSecret(t, scenario.wantNewKeySecret), gotNewKeySecret))
 			}
 
-			gotEncConfigSecret, _, err := computer.ComputeEncryptionConfigSecretWithNewKey(context.Background(), syncCtx)
+			gotEncConfigSecret, err := computer.ComputeEncryptionConfiguration(context.Background())
 			if err != nil {
-				t.Fatalf("ComputeEncryptionConfigSecretWithNewKey: %v", err)
+				t.Fatalf("ComputeEncryptionConfiguration: %v", err)
 			}
 			if !equality.Semantic.DeepEqual(gotEncConfigSecret, mustParseSecret(t, scenario.wantEncConfigSecret)) {
 				t.Errorf("encryption config secret mismatch:\n%s", diff.Diff(mustParseSecret(t, scenario.wantEncConfigSecret), gotEncConfigSecret))
