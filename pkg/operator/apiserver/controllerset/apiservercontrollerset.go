@@ -508,7 +508,7 @@ func (e *encryptionControllerBuilder) build() []controllerWrapper {
 		return []controllerWrapper{e.controllerWrapper}
 	}
 
-	controllers, err := encryption.NewControllers(
+	_, controllers, err := encryption.NewControllers(
 		e.component,
 		e.unsupportedConfigPrefix,
 		e.provider,

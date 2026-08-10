@@ -156,7 +156,7 @@ func TestEncryptionIntegration(tt *testing.T) {
 		{Group: "operator.openshift.io", Resource: "kubeschedulers"},
 	})
 
-	controllers, err := encryption.NewControllers(
+	_, controllers, err := encryption.NewControllers(
 		component,
 		[]string{},
 		provider,

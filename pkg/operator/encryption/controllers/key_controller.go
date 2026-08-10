@@ -92,7 +92,11 @@ type keyController struct {
 	getKMSPluginConfigMapFn          func(context.Context, string) (*corev1.ConfigMap, error)
 }
 
-func NewKeyController(
+// newKeyControllerInternal creates and fully initialises a *keyController without
+// registering it with any informer framework. Callers that need a running
+// controller should also call newKeyControllerFactory; callers that only need
+// the compute path (e.g. EncryptionComputer) can use the struct directly.
+func newKeyControllerInternal(
 	instanceName string,
 	unsupportedConfigPrefix []string,
 	provider Provider,
@@ -100,15 +104,11 @@ func NewKeyController(
 	preconditionsFulfilledFn preconditionsFulfilled,
 	operatorClient operatorv1helpers.OperatorClient,
 	apiServerClient configv1client.APIServerInterface,
-	apiServerInformer configv1informers.APIServerInformer,
-	kubeInformersForNamespaces operatorv1helpers.KubeInformersForNamespaces,
 	secretClient corev1client.SecretsGetter,
 	configMapClient corev1client.ConfigMapsGetter,
 	encryptionSecretSelector metav1.ListOptions,
-	eventRecorder events.Recorder,
-	// encryptionStatusProvider is required for KMS operators; it gates key creation on a preflight check.
 	encryptionStatusProvider kms.EncryptionStatusProvider,
-) factory.Controller {
+) *keyController {
 	c := &keyController{
 		operatorClient:  operatorClient,
 		apiServerClient: apiServerClient,
@@ -149,6 +149,17 @@ func NewKeyController(
 		return c.configMapClient.ConfigMaps(openshiftConfigNS).Get(ctx, name, metav1.GetOptions{})
 	}
 
+	return c
+}
+
+// newKeyControllerFactory wraps an already-initialised *keyController in a
+// factory.Controller, registering it with the supplied informers.
+func newKeyControllerFactory(
+	c *keyController,
+	apiServerInformer configv1informers.APIServerInformer,
+	kubeInformersForNamespaces operatorv1helpers.KubeInformersForNamespaces,
+	eventRecorder events.Recorder,
+) factory.Controller {
 	return factory.New().
 		WithSync(c.sync).
 		WithControllerInstanceName(c.controllerInstanceName).
@@ -158,18 +169,43 @@ func NewKeyController(
 		ResyncEvery(time.Minute).
 		WithInformers(
 			apiServerInformer.Informer(),
-			operatorClient.Informer(),
+			c.operatorClient.Informer(),
 			kubeInformersForNamespaces.InformersFor("openshift-config-managed").Core().V1().Secrets().Informer(),
 			// openshift-config secrets/configmaps are not watched directly. While we could
 			// build a mechanism to watch only the referenced resources, creating and
 			// maintaining it is not free, and watching all resources in the namespace
 			// would create excessive API server load. Instead, changes are picked up
 			// on the next periodic resync.
-			deployer,
+			c.deployer,
 		).ToController(
 		c.controllerInstanceName,
 		eventRecorder.WithComponentSuffix("encryption-key-controller"),
 	)
+}
+
+func NewKeyController(
+	instanceName string,
+	unsupportedConfigPrefix []string,
+	provider Provider,
+	deployer statemachine.Deployer,
+	preconditionsFulfilledFn preconditionsFulfilled,
+	operatorClient operatorv1helpers.OperatorClient,
+	apiServerClient configv1client.APIServerInterface,
+	apiServerInformer configv1informers.APIServerInformer,
+	kubeInformersForNamespaces operatorv1helpers.KubeInformersForNamespaces,
+	secretClient corev1client.SecretsGetter,
+	configMapClient corev1client.ConfigMapsGetter,
+	encryptionSecretSelector metav1.ListOptions,
+	eventRecorder events.Recorder,
+	// encryptionStatusProvider is required for KMS operators; it gates key creation on a preflight check.
+	encryptionStatusProvider kms.EncryptionStatusProvider,
+) factory.Controller {
+	c := newKeyControllerInternal(
+		instanceName, unsupportedConfigPrefix, provider, deployer, preconditionsFulfilledFn,
+		operatorClient, apiServerClient, secretClient, configMapClient,
+		encryptionSecretSelector, encryptionStatusProvider,
+	)
+	return newKeyControllerFactory(c, apiServerInformer, kubeInformersForNamespaces, eventRecorder)
 }
 
 func (c *keyController) sync(ctx context.Context, syncCtx factory.SyncContext) (err error) {

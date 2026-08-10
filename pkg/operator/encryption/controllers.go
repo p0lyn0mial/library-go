@@ -40,8 +40,7 @@ func NewControllers(
 	resourceSyncer *resourcesynccontroller.ResourceSyncController,
 	encryptionStatusProvider kms.EncryptionStatusProvider,
 	preflightDeployer controllers.KMSPreflightDeployer,
-	encryptionConfigurationComputer controllers.EncryptionConfigurationComputer,
-) (Controllers, error) {
+) (*controllers.EncryptionComputer, Controllers, error) {
 	// avoid using the CachedSecretGetter as we need strong guarantees that our encryptionSecretSelector works
 	// otherwise we could see secrets from a different component (which will break our keyID invariants)
 	// this is fine in terms of performance since these controllers will be idle most of the time
@@ -50,7 +49,7 @@ func NewControllers(
 
 	encryptionEnabledChecker, err := newEncryptionEnabledPrecondition(apiServerInformer.Lister(), kubeInformersForNamespaces, encryptionSecretSelector.LabelSelector, component)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// for testing resourceSyncer might be nil
@@ -60,39 +59,32 @@ func NewControllers(
 			resourcesynccontroller.ResourceLocation{Namespace: "openshift-config-managed", Name: fmt.Sprintf("%s-%s", encryptiondata.EncryptionConfSecretName, component)},
 			encryptionEnabledChecker.PreconditionFulfilled,
 		); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 	}
 
+	// Build the key and state controllers together with the EncryptionComputer so that
+	// all three share the same underlying *keyController and *stateController instances.
+	computer, keyController, stateController := controllers.NewEncryptionComputerWithControllers(
+		component,
+		unsupportedConfigPrefix,
+		provider,
+		deployer,
+		encryptionEnabledChecker.PreconditionFulfilled,
+		operatorClient,
+		apiServerClient,
+		apiServerInformer,
+		kubeInformersForNamespaces,
+		secretsClient,
+		configMapClient,
+		encryptionSecretSelector,
+		eventRecorder,
+		encryptionStatusProvider,
+	)
+
 	encryptionControllers := []factory.Controller{
-		controllers.NewKeyController(
-			component,
-			unsupportedConfigPrefix,
-			provider,
-			deployer,
-			encryptionEnabledChecker.PreconditionFulfilled,
-			operatorClient,
-			apiServerClient,
-			apiServerInformer,
-			kubeInformersForNamespaces,
-			secretsClient,
-			configMapClient,
-			encryptionSecretSelector,
-			eventRecorder,
-			encryptionStatusProvider,
-		),
-		controllers.NewStateController(
-			component,
-			provider,
-			deployer,
-			encryptionEnabledChecker.PreconditionFulfilled,
-			operatorClient,
-			apiServerInformer,
-			kubeInformersForNamespaces,
-			secretsClient,
-			encryptionSecretSelector,
-			eventRecorder,
-		),
+		keyController,
+		stateController,
 		controllers.NewPruneController(
 			component,
 			provider,
@@ -137,7 +129,7 @@ func NewControllers(
 		provider,
 		encryptionEnabledChecker.PreconditionFulfilled,
 		preflightDeployer,
-		encryptionConfigurationComputer,
+		computer,
 		operatorClient,
 		apiServerClient,
 		secretsClient,
@@ -146,7 +138,7 @@ func NewControllers(
 		eventRecorder,
 	))
 
-	return encryptionControllers, nil
+	return computer, encryptionControllers, nil
 }
 
 type Controllers []factory.Controller
