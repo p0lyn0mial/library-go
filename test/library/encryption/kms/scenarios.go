@@ -113,7 +113,7 @@ func PreflightDeployScenario(ctx context.Context, t testing.TB) library.Prefligh
 	}
 }
 
-func KMSPreflightNegativeScenarios(ctx context.Context, t testing.TB) []library.KMSPreflightNegativeScenario {
+func KMSPreflightNegativeScenarios(ctx context.Context, t testing.TB) [][]library.KMSPreflightNegativeScenario {
 	t.Helper()
 
 	type opDef struct {
@@ -131,9 +131,9 @@ func KMSPreflightNegativeScenarios(ctx context.Context, t testing.TB) []library.
 	invalidAddr := InvalidVaultEncryptionProvider(ctx, t, "https://192.0.2.1:8200", "")
 	invalidImg := InvalidVaultEncryptionProvider(ctx, t, "", "quay.io/openshifttest/vault-kube-kms@sha256:0000000000000000000000000000000000000000000000000000000000000000")
 
-	var scenarios []library.KMSPreflightNegativeScenario
-	for _, op := range ops {
-		scenarios = append(scenarios, library.KMSPreflightNegativeScenario{
+	var invalidAddressScenarios []library.KMSPreflightNegativeScenario
+	for i, op := range ops {
+		scenario := library.KMSPreflightNegativeScenario{
 			BasicScenario: library.BasicScenario{
 				Namespace:                       globalMachineSpecifiedConfigNamespace,
 				LabelSelector:                   encryptionComponentLabelSelector(op.component),
@@ -144,12 +144,16 @@ func KMSPreflightNegativeScenarios(ctx context.Context, t testing.TB) []library.
 				AssertFunc:                      op.assertFn,
 			},
 			Name:             "invalid-vault-address",
-			InvalidProvider:  invalidAddr,
 			AssertFailedFunc: library.AssertKMSPreflightCheckerFailedForOperator,
-		})
+		}
+		if i == 0 {
+			scenario.InvalidProvider = invalidAddr
+		}
+		invalidAddressScenarios = append(invalidAddressScenarios, scenario)
 	}
-	for _, op := range ops {
-		scenarios = append(scenarios, library.KMSPreflightNegativeScenario{
+	var invalidImageScenarios []library.KMSPreflightNegativeScenario
+	for i, op := range ops {
+		scenario := library.KMSPreflightNegativeScenario{
 			BasicScenario: library.BasicScenario{
 				Namespace:                       globalMachineSpecifiedConfigNamespace,
 				LabelSelector:                   encryptionComponentLabelSelector(op.component),
@@ -160,11 +164,14 @@ func KMSPreflightNegativeScenarios(ctx context.Context, t testing.TB) []library.
 				AssertFunc:                      op.assertFn,
 			},
 			Name:             "invalid-image",
-			InvalidProvider:  invalidImg,
 			AssertFailedFunc: library.AssertKMSPreflightDegradedForOperator,
-		})
+		}
+		if i == 0 {
+			scenario.InvalidProvider = invalidImg
+		}
+		invalidImageScenarios = append(invalidImageScenarios, scenario)
 	}
-	return scenarios
+	return [][]library.KMSPreflightNegativeScenario{invalidAddressScenarios, invalidImageScenarios}
 }
 
 func kasOnOffScenario(provider library.EncryptionProvider) library.OnOffScenario {
