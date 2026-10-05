@@ -508,36 +508,22 @@ func assertKMSPreflightSucceeded(ctx context.Context, t testing.TB, dynamicClien
 		previous.ObservedConfigHash, previous.Result.RemoteKeyID)
 }
 
-// AssertKMSPreflightFailedForOperator waits until preflight has observed a config newer than
-// previous and reports failure for that config (Result=Failed with matching hash, and/or
-// EncryptionKMSPreflightControllerDegraded=True). previous is the pre-apply snapshot
-// (see ReadKMSPreflightForOperator) so a stale Degraded from an earlier case cannot pass.
-func AssertKMSPreflightFailedForOperator(ctx context.Context, t testing.TB, clientSet ClientSet, operatorNamespace string, previous operatorv1.KMSPreflightCheck) {
-	t.Helper()
-	cr := operatorCRForNamespace(t, operatorNamespace)
-	var preflight operatorv1.KMSPreflightCheck
-	var degradedTrue bool
+func waitForFreshKMSPreflightStatus(ctx context.Context, clientSet ClientSet, cr kmsOperatorCR, previous operatorv1.KMSPreflightCheck, matches func(kmsOperatorStatus) bool) (kmsOperatorStatus, error) {
+	var status kmsOperatorStatus
 	err := wait.PollUntilContextTimeout(ctx, waitPollInterval, waitPollTimeout, true, func(ctx context.Context) (bool, error) {
 		obj, err := clientSet.DynamicClient.Resource(cr.gvr).Get(ctx, "cluster", metav1.GetOptions{})
 		if err != nil {
 			return false, nil
 		}
-		status, err := cr.decodeKMSOperatorStatus(obj.Object)
+		status, err = cr.decodeKMSOperatorStatus(obj.Object)
 		if err != nil {
 			return false, err
 		}
-		preflight = status.EncryptionStatus.Preflight
-		degradedTrue = v1helpers.IsOperatorConditionTrue(status.Conditions, preflightDegradedConditionType)
-		observedAdvanced := preflight.ObservedConfigHash != "" && preflight.ObservedConfigHash != previous.ObservedConfigHash
-		failed := preflight.Result.Status == operatorv1.KMSPreflightResultFailed &&
-			preflight.Result.ConfigHash != "" && preflight.Result.ConfigHash == preflight.ObservedConfigHash
-		return observedAdvanced && (degradedTrue || failed), nil
+		preflight := status.EncryptionStatus.Preflight
+		fresh := preflight.ObservedConfigHash != "" && preflight.ObservedConfigHash != previous.ObservedConfigHash
+		return fresh && matches(status), nil
 	})
-	require.NoErrorf(t, err,
-		"KMS preflight failure not observed for %s/cluster: degradedTrue=%t result.status=%q configHash=%q observed=%q (previous observed=%q)",
-		cr.gvr.Resource, degradedTrue, preflight.Result.Status, preflight.Result.ConfigHash, preflight.ObservedConfigHash, previous.ObservedConfigHash)
-	require.NotEmptyf(t, preflight.ObservedConfigHash,
-		"KMS preflight ObservedConfigHash must be set after failure is observed for %s/cluster", cr.gvr.Resource)
+	return status, err
 }
 
 // AssertKMSPreflightCheckerFailedForOperator waits for the preflight checker to
@@ -547,22 +533,13 @@ func AssertKMSPreflightFailedForOperator(ctx context.Context, t testing.TB, clie
 func AssertKMSPreflightCheckerFailedForOperator(ctx context.Context, t testing.TB, clientSet ClientSet, operatorNamespace string, previous operatorv1.KMSPreflightCheck) {
 	t.Helper()
 	cr := operatorCRForNamespace(t, operatorNamespace)
-	var preflight operatorv1.KMSPreflightCheck
-	err := wait.PollUntilContextTimeout(ctx, waitPollInterval, waitPollTimeout, true, func(ctx context.Context) (bool, error) {
-		obj, err := clientSet.DynamicClient.Resource(cr.gvr).Get(ctx, "cluster", metav1.GetOptions{})
-		if err != nil {
-			return false, nil
-		}
-		status, err := cr.decodeKMSOperatorStatus(obj.Object)
-		if err != nil {
-			return false, err
-		}
-		preflight = status.EncryptionStatus.Preflight
-		observedAdvanced := preflight.ObservedConfigHash != "" && preflight.ObservedConfigHash != previous.ObservedConfigHash
+	status, err := waitForFreshKMSPreflightStatus(ctx, clientSet, cr, previous, func(status kmsOperatorStatus) bool {
+		preflight := status.EncryptionStatus.Preflight
 		failed := preflight.Result.Status == operatorv1.KMSPreflightResultFailed &&
 			preflight.Result.ConfigHash != "" && preflight.Result.ConfigHash == preflight.ObservedConfigHash
-		return observedAdvanced && failed, nil
+		return failed
 	})
+	preflight := status.EncryptionStatus.Preflight
 	require.NoErrorf(t, err,
 		"KMS preflight checker failure (Result.Status=Failed) not observed for %s/cluster: result.status=%q configHash=%q observed=%q (previous observed=%q)",
 		cr.gvr.Resource, preflight.Result.Status, preflight.Result.ConfigHash, preflight.ObservedConfigHash, previous.ObservedConfigHash)
@@ -575,22 +552,11 @@ func AssertKMSPreflightCheckerFailedForOperator(ctx context.Context, t testing.T
 func AssertKMSPreflightDegradedForOperator(ctx context.Context, t testing.TB, clientSet ClientSet, operatorNamespace string, previous operatorv1.KMSPreflightCheck) {
 	t.Helper()
 	cr := operatorCRForNamespace(t, operatorNamespace)
-	var preflight operatorv1.KMSPreflightCheck
-	var degradedTrue bool
-	err := wait.PollUntilContextTimeout(ctx, waitPollInterval, waitPollTimeout, true, func(ctx context.Context) (bool, error) {
-		obj, err := clientSet.DynamicClient.Resource(cr.gvr).Get(ctx, "cluster", metav1.GetOptions{})
-		if err != nil {
-			return false, nil
-		}
-		status, err := cr.decodeKMSOperatorStatus(obj.Object)
-		if err != nil {
-			return false, err
-		}
-		preflight = status.EncryptionStatus.Preflight
-		degradedTrue = v1helpers.IsOperatorConditionTrue(status.Conditions, preflightDegradedConditionType)
-		observedAdvanced := preflight.ObservedConfigHash != "" && preflight.ObservedConfigHash != previous.ObservedConfigHash
-		return observedAdvanced && degradedTrue, nil
+	status, err := waitForFreshKMSPreflightStatus(ctx, clientSet, cr, previous, func(status kmsOperatorStatus) bool {
+		return v1helpers.IsOperatorConditionTrue(status.Conditions, preflightDegradedConditionType)
 	})
+	preflight := status.EncryptionStatus.Preflight
+	degradedTrue := v1helpers.IsOperatorConditionTrue(status.Conditions, preflightDegradedConditionType)
 	require.NoErrorf(t, err,
 		"KMS preflight Degraded=True not observed for %s/cluster: degradedTrue=%t observed=%q (previous observed=%q)",
 		cr.gvr.Resource, degradedTrue, preflight.ObservedConfigHash, previous.ObservedConfigHash)

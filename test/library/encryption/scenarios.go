@@ -45,13 +45,13 @@ func TestEncryptionTypeIdentity(ctx context.Context, t testing.TB, scenario Basi
 // the invalid provider.
 // AssertFailedFunc lets the caller distinguish preflight result=Failed (checker
 // reached the KMS but the check failed) from Degraded-only (image pull, deploy
-// error). When nil the default AssertKMSPreflightFailedForOperator is used.
+// error).
 type KMSPreflightNegativeScenario struct {
 	BasicScenario
 	Name            string
 	InvalidProvider EncryptionProvider
-	// AssertFailedFunc, when set, replaces AssertKMSPreflightFailedForOperator.
-	// Use it to assert Degraded-only (e.g. bad image) vs result=Failed (bad address).
+	// AssertFailedFunc asserts the expected failure path: Degraded-only (e.g. bad
+	// image) or result=Failed (e.g. bad address).
 	AssertFailedFunc func(ctx context.Context, t testing.TB, clientSet ClientSet, operatorNamespace string, previous operatorv1.KMSPreflightCheck)
 }
 
@@ -75,11 +75,6 @@ func kmsPreflightNegativeSteps(ctx context.Context, clients ClientSet, name stri
 	var baseline EncryptionKeyMeta
 	var previousPreflight operatorv1.KMSPreflightCheck
 
-	assertFn := scenario.AssertFailedFunc
-	if assertFn == nil {
-		assertFn = AssertKMSPreflightFailedForOperator
-	}
-
 	snapshotStep := testStep{
 		name: fmt.Sprintf("Snapshot %s for %s", name, scenario.OperatorNamespace),
 		testFunc: func(t testing.TB) {
@@ -93,7 +88,7 @@ func kmsPreflightNegativeSteps(ctx context.Context, clients ClientSet, name stri
 	assertFailureStep := testStep{
 		name: fmt.Sprintf("Assert %s for %s", name, scenario.OperatorNamespace),
 		testFunc: func(t testing.TB) {
-			assertFn(ctx, t, clients, scenario.OperatorNamespace, previousPreflight)
+			scenario.AssertFailedFunc(ctx, t, clients, scenario.OperatorNamespace, previousPreflight)
 			WaitForNoNewEncryptionKey(t, clients.Kube, baseline, scenario.Namespace, scenario.LabelSelector)
 		},
 	}
@@ -110,6 +105,9 @@ func TestKMSPreflightNegative(ctx context.Context, t testing.TB, scenarioBatches
 	require.NotEmpty(t, scenarioBatches)
 	for i, scenarios := range scenarioBatches {
 		require.NotEmptyf(t, scenarios, "KMS preflight negative scenario batch %d must not be empty", i)
+		for _, scenario := range scenarios {
+			require.NotNilf(t, scenario.AssertFailedFunc, "KMS preflight negative scenario %q for %s requires AssertFailedFunc", scenario.Name, scenario.OperatorNamespace)
+		}
 	}
 
 	e := NewE(t, PrintEventsOnFailure(scenarioBatches[0][0].OperatorNamespace))
